@@ -1,0 +1,18 @@
+# Build outputs and bundles (recreated by build_all.py)
+/Android Wireless.app/
+/AndroidWireless-v2
+/Android Wireless Companion.apk
+/Android Wireless Companion.apk.idsig
+/android/build/
+/scrcpy-5.0.1/build/
+/scrcpy-5.0.1/server/build_manual/
+/tests/window-controls/Phone Window Check.app/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local SDK (large, re-downloadable)
+/.android-sdk/
+
+# Private signing key: back it up separately, never commit it
+*.keystore

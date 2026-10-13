@@ -1,0 +1,223 @@
+import AppKit
+import Foundation
+
+let phoneSerial = "R5CW515PYBR"
+let adbPath = "/opt/homebrew/bin/adb"
+let scrcpyPath = "/opt/homebrew/bin/scrcpy"
+
+struct CommandResult {
+    let code: Int32
+    let output: String
+}
+
+func command(_ arguments: [String]) -> CommandResult {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: adbPath)
+    process.arguments = arguments
+    process.standardOutput = output
+    process.standardError = output
+    let completed = DispatchSemaphore(value: 0)
+    process.terminationHandler = { _ in completed.signal() }
+    do { try process.run() } catch {
+        return CommandResult(code: -1, output: error.localizedDescription)
+    }
+    if completed.wait(timeout: .now() + 8) == .timedOut {
+        process.terminate()
+        return CommandResult(code: -1, output: "Connection timed out.")
+    }
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    return CommandResult(code: process.terminationStatus,
+                         output: String(decoding: data, as: UTF8.self))
+}
+
+func connectedPhone() -> String? {
+    let devices = command(["devices"]).output
+    for line in devices.split(separator: "\n") {
+        let fields = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        if fields.count >= 2 && fields[1] == "device"
+            && fields[0].hasPrefix("adb-\(phoneSerial)-") {
+            return fields[0]
+        }
+    }
+    return nil
+}
+
+func findPhone() -> String? {
+    _ = command(["start-server"])
+    for _ in 0..<10 {
+        if let serial = connectedPhone() { return serial }
+        let services = command(["mdns", "services"]).output
+        for line in services.split(separator: "\n") {
+            let fields = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            guard fields.count >= 3,
+                  fields[0].hasPrefix("adb-\(phoneSerial)-"),
+                  fields[1] == "_adb-tls-connect._tcp" else { continue }
+            let address = fields[2]
+            let result = command(["connect", address])
+            guard result.code == 0 else { continue }
+            let identity = command(["-s", address, "shell", "getprop", "ro.serialno"])
+                .output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if identity == phoneSerial { return address }
+        }
+        Thread.sleep(forTimeInterval: 1)
+    }
+    return nil
+}
+
+final class Launcher: NSObject, NSApplicationDelegate {
+    var window: NSWindow!
+    var status: NSTextField!
+    var button: NSButton!
+    var spinner: NSProgressIndicator!
+    var mirror: Process?
+    var mirrorOutput: Pipe?
+    var connecting = false
+    var quitting = false
+    var sawVideo = false
+    var recentLog = ""
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 430, height: 250),
+                          styleMask: [.titled, .closable, .miniaturizable],
+                          backing: .buffered, defer: false)
+        window.title = "Android Wireless"
+        window.center()
+        let title = NSTextField(labelWithString: "Samsung on your Mac")
+        title.font = .systemFont(ofSize: 22, weight: .semibold)
+        title.frame = NSRect(x: 26, y: 192, width: 380, height: 30)
+        window.contentView!.addSubview(title)
+        status = NSTextField(wrappingLabelWithString: "")
+        status.frame = NSRect(x: 26, y: 104, width: 378, height: 76)
+        window.contentView!.addSubview(status)
+        spinner = NSProgressIndicator(frame: NSRect(x: 28, y: 56, width: 20, height: 20))
+        spinner.style = .spinning
+        spinner.isDisplayedWhenStopped = false
+        window.contentView!.addSubview(spinner)
+        button = NSButton(title: "Connect", target: self, action: #selector(connect))
+        button.bezelStyle = .rounded
+        button.frame = NSRect(x: 290, y: 48, width: 112, height: 32)
+        window.contentView!.addSubview(button)
+        let menu = NSMenu()
+        let item = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit Android Wireless", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        item.submenu = appMenu
+        menu.addItem(item)
+        NSApplication.shared.mainMenu = menu
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        connect()
+    }
+
+    @objc func connect() {
+        guard !connecting, mirror?.isRunning != true else { return }
+        guard FileManager.default.isExecutableFile(atPath: adbPath),
+              FileManager.default.isExecutableFile(atPath: scrcpyPath) else {
+            status.stringValue = "scrcpy or adb is missing. Install them with Homebrew, then try again."
+            return
+        }
+        connecting = true
+        button.isEnabled = false
+        status.stringValue = "Finding your Samsung…\nKeep Wireless debugging on and both devices on the same Wi-Fi."
+        spinner.startAnimation(nil)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let serial = findPhone()
+            DispatchQueue.main.async {
+                self.connecting = false
+                self.spinner.stopAnimation(nil)
+                if let serial { self.startMirror(serial) } else {
+                    self.status.stringValue = "Phone not found. Turn on Wireless debugging and check that both devices use the same Wi-Fi. If this Mac was forgotten on your phone, pair it again."
+                    self.button.title = "Try Again"
+                    self.button.isEnabled = true
+                }
+            }
+        }
+    }
+
+    func startMirror(_ serial: String) {
+        let process = Process()
+        let pipe = Pipe()
+        // A pseudo-terminal gives scrcpy the same launch environment as Terminal
+        // and streams its status promptly. No terminal window or transcript is created.
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        process.arguments = ["-q", "/dev/null", scrcpyPath, "-s", serial, "--force-adb-forward", "--no-terminal-title",
+                             "--window-title", "Samsung · Wireless"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["ADB"] = adbPath
+        process.environment = environment
+        process.standardOutput = pipe
+        process.standardError = pipe
+        mirror = process
+        mirrorOutput = pipe
+        sawVideo = false
+        recentLog = ""
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
+            let text = String(decoding: data, as: UTF8.self)
+            DispatchQueue.main.async {
+                self.recentLog = String((self.recentLog + text).suffix(2500))
+                if text.contains("Texture") {
+                    self.sawVideo = true
+                    self.status.stringValue = "Connected wirelessly.\nUse the Samsung window to control your phone. Close that window when finished."
+                }
+            }
+        }
+        process.terminationHandler = { _ in
+            DispatchQueue.main.async {
+                guard !self.quitting else { return }
+                self.spinner.stopAnimation(nil)
+                self.button.title = "Connect"
+                self.button.isEnabled = true
+                self.status.stringValue = process.terminationStatus == 0 || self.sawVideo
+                    ? "Screen sharing stopped. Click Connect to open it again."
+                    : "Screen sharing could not start. Unlock your phone and try again.\n\(self.recentLog.suffix(400))"
+            }
+        }
+        do {
+            try process.run()
+            status.stringValue = "Opening your phone screen…"
+        } catch {
+            status.stringValue = "Could not open scrcpy: \(error.localizedDescription)"
+            button.isEnabled = true
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        window.makeKeyAndOrderFront(nil)
+        if mirror?.isRunning != true { connect() }
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        quitting = true
+        if let mirror, mirror.isRunning {
+            // Stop only the scrcpy child belonging to this launcher.
+            let stop = Process()
+            stop.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            stop.arguments = ["-TERM", "-P", String(mirror.processIdentifier)]
+            try? stop.run()
+            stop.waitUntilExit()
+            if mirror.isRunning { mirror.terminate() }
+        }
+    }
+}
+
+if CommandLine.arguments.contains("--check") {
+    if let serial = findPhone() {
+        print("Phone discovered: \(serial)")
+        exit(0)
+    }
+    fputs("Paired phone not found. Enable Wireless debugging on the same Wi-Fi.\n", stderr)
+    exit(1)
+}
+
+let application = NSApplication.shared
+let launcher = Launcher()
+application.setActivationPolicy(.regular)
+application.delegate = launcher
+application.run()
