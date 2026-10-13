@@ -30,6 +30,8 @@ func discoveredWirelessEndpoints(_ service: String) -> [String] {
 final class PairPhoneWindow: NSWindowController, NSWindowDelegate {
     var onBusy: ((Bool) -> Void)?
     var onConnected: ((String) -> Void)?
+    /// Called after a new ADB pairing succeeds, before connecting.
+    var onPaired: (() -> Void)?
     private let pairingAddress = NSTextField()
     private let code = NSSecureTextField()
     private let connectAddress = NSTextField()
@@ -140,6 +142,7 @@ final class PairPhoneWindow: NSWindowController, NSWindowDelegate {
                 }
                 return
             }
+            DispatchQueue.main.async { self.onPaired?() }
             let connected = self.connectPhone(manual.isEmpty ? nil : wirelessEndpoint(manual))
             DispatchQueue.main.async {
                 self.busy(false)

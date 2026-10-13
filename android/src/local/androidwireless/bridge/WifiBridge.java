@@ -25,7 +25,7 @@ final class WifiBridge {
     static String identity = "";
 
     static synchronized void start(Context context) {
-        if (server != null) return;
+        if (server != null && !server.isClosed()) return;
         if (context.getSharedPreferences("bridge", 0).getString("token", "").length() != 64) return;
         try {
             KeyStore keys = KeyStore.getInstance("AndroidKeyStore"); keys.load(null);
@@ -54,14 +54,22 @@ final class WifiBridge {
             };
             SSLContext tls = SSLContext.getInstance("TLS");
             tls.init(new KeyManager[]{keyManager}, null, new SecureRandom());
-            SSLServerSocket listener = (SSLServerSocket)tls.getServerSocketFactory().createServerSocket(PORT, 8);
+            SSLServerSocket listener = (SSLServerSocket)tls.getServerSocketFactory().createServerSocket();
+            listener.setReuseAddress(true);
+            listener.bind(new java.net.InetSocketAddress(PORT), 16);
             listener.setEnabledProtocols(android.os.Build.VERSION.SDK_INT >= 29 ? new String[]{"TLSv1.2", "TLSv1.3"} : new String[]{"TLSv1.2"});
             server = listener;
             Thread accept = new Thread(() -> {
                 while (!listener.isClosed()) {
-                    try { BridgeState.accept(listener.accept()); }
-                    catch (Exception error) { if (!listener.isClosed()) android.util.Log.w("AndroidWireless", "LAN accept", error); }
+                    try { BridgeState.accept(listener.accept(), true); }
+                    catch (Exception error) {
+                        if (listener.isClosed()) break;
+                        android.util.Log.w("AndroidWireless", "LAN accept", error);
+                        // Avoid a hot loop on persistent errors such as descriptor exhaustion.
+                        try { Thread.sleep(200); } catch (InterruptedException stop) { break; }
+                    }
                 }
+                synchronized (WifiBridge.class) { if (server == listener) server = null; }
             }, "wireless-encrypted-wifi");
             accept.setDaemon(true); accept.start();
             SharedPreferences prefs = context.getSharedPreferences("bridge", 0);
@@ -70,12 +78,16 @@ final class WifiBridge {
                 identity = "AW-" + UUID.randomUUID().toString().replace("-", "");
                 prefs.edit().putString("lanIdentity", identity).commit();
             }
+            if (registration != null) return;
             manager = (NsdManager)context.getSystemService(Context.NSD_SERVICE);
             NsdServiceInfo service = new NsdServiceInfo();
             service.setServiceName(identity); service.setServiceType("_androidwireless._tcp."); service.setPort(PORT);
             registration = new NsdManager.RegistrationListener() {
                 public void onServiceRegistered(NsdServiceInfo info) { }
-                public void onRegistrationFailed(NsdServiceInfo info, int error) { }
+                public void onRegistrationFailed(NsdServiceInfo info, int error) {
+                    // Allow a later start() (for example on the next Wi-Fi change) to retry.
+                    synchronized (WifiBridge.class) { registration = null; }
+                }
                 public void onServiceUnregistered(NsdServiceInfo info) { }
                 public void onUnregistrationFailed(NsdServiceInfo info, int error) { }
             };

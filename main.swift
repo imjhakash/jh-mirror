@@ -3,6 +3,7 @@ import Foundation
 import UserNotifications
 import CryptoKit
 import Darwin
+import ServiceManagement
 
 func connectionLog(_ text: String) {
     let folder = WifiPeer.directory
@@ -99,6 +100,7 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
     var mirrorRetry: Timer?
     var mirrorBackoff = RetryGate()
     var mirrorStarted = Date.distantPast
+    var mirrorUserClosed = false
     var mirrorFrame: NSRect?
     var awakeActivity: NSObjectProtocol?
     var receiving = true
@@ -119,6 +121,9 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
     var fingerprints: [String: String] = [:]
     var deliveredIDs: [String: String] = [:]
     var connectionText = "Connecting notification sync…"
+    var recentFiles: [URL] = []
+    var pasteboardProviders: [ImagePasteboardProvider] = []
+    var loginItem: NSMenuItem?
     let bridge = BridgeClient()
     let notifications = UNUserNotificationCenter.current()
 
@@ -136,6 +141,8 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
             self?.mirrorBackoff.succeeded()
             self?.bridge.tick()
         }
+        recentFiles = (UserDefaults.standard.stringArray(forKey: "recentReceivedFiles") ?? [])
+            .map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
         makeWindow()
         makeMenus()
         makePhoneTools()
@@ -154,6 +161,7 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
         bridge.onEvents = { [weak self] events in self?.receive(events) }
         bridge.files.onStatus = { [weak self] text in self?.fileStatus.stringValue = text }
         bridge.files.onReceived = { [weak self] url in self?.receivedFile(url) }
+        bridge.files.onClipboard = { [weak self] url in self?.copiedFromPhone(url) }
         bridge.start()
         mirrorRetry = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             guard let self, self.mirrorWanted, !self.connecting, !self.pairingBusy, self.mirrorBackoff.ready(), self.mirror?.isRunning != true else { return }
@@ -272,6 +280,11 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
     func receivedFile(_ url: URL) {
         latestFile = url; latestFileButton.isEnabled = true
         UserDefaults.standard.set(url.path, forKey: "latestReceivedFile")
+        recentFiles.removeAll { $0 == url }
+        recentFiles.insert(url, at: 0)
+        recentFiles = Array(recentFiles.filter { FileManager.default.fileExists(atPath: $0.path) }.prefix(8))
+        UserDefaults.standard.set(recentFiles.map(\.path), forKey: "recentReceivedFiles")
+        tools?.setRecentFiles(recentFiles)
         guard alertsAllowed else { return }
         let content = UNMutableNotificationContent()
         content.title = "File received from Samsung"
@@ -279,6 +292,51 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
         content.sound = .default
         content.userInfo = ["receivedFile": url.path]
         notifications.add(UNNotificationRequest(identifier: "file-" + UUID().uuidString, content: content, trigger: nil))
+    }
+
+    /// A phone item sent with Copy to Mac: put it on the Mac clipboard.
+    func copiedFromPhone(_ url: URL) {
+        guard placeOnPasteboard(url, providers: &pasteboardProviders) else {
+            fileStatus.stringValue = "Received \(url.lastPathComponent) but could not place it on the clipboard."; return
+        }
+        fileStatus.stringValue = "Copied from phone · press ⌘V to paste · \(url.lastPathComponent)"
+        connectionLog("Phone clipboard item placed on Mac clipboard")
+        guard alertsAllowed else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Copied from your phone"
+        content.body = "Press ⌘V to paste " + url.lastPathComponent
+        content.userInfo = ["receivedFile": url.path]
+        notifications.add(UNNotificationRequest(identifier: "clipboard-" + UUID().uuidString, content: content, trigger: nil))
+    }
+
+    /// Sidebar click on a recent file: copy it for ⌘V.
+    func copyReceivedFile(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            recentFiles.removeAll { $0 == url }; tools.setRecentFiles(recentFiles); return
+        }
+        fileStatus.stringValue = placeOnPasteboard(url, providers: &pasteboardProviders)
+            ? "Copied \(url.lastPathComponent) · press ⌘V in any app to paste"
+            : "Could not copy \(url.lastPathComponent)."
+    }
+
+    func sendFilesToPhone(_ urls: [URL]) {
+        fileStatus.stringValue = "Preparing to send \(urls.count) item(s) to the phone…"
+        bridge.sendToPhone(urls) { [weak self] text in self?.fileStatus.stringValue = text }
+    }
+
+    @objc func copyPhoneClipboard() {
+        fileStatus.stringValue = "Asking the phone for its clipboard…"
+        bridge.copyPhoneClipboard { [weak self] text in self?.fileStatus.stringValue = text }
+    }
+
+    @objc func toggleLoginItem() {
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .enabled { try service.unregister() } else { try service.register() }
+        } catch {
+            alertStatus.stringValue = "Could not change Open at Login: \(error.localizedDescription). Use System Settings → General → Login Items."
+        }
+        loginItem?.state = service.status == .enabled ? .on : .off
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
@@ -304,11 +362,17 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
         let tray = NSMenu()
         for (title, action) in [("Open Android Wireless", #selector(showPanel)), ("Open Phone Screen", #selector(connect)),
                                 ("Show Phone Tools", #selector(showPhoneTools)),
+                                ("Copy Phone Clipboard to Mac", #selector(copyPhoneClipboard)),
                                 ("Pair Phone", #selector(showPairPhone)),
                                 ("Pause / Resume Notifications", #selector(toggleSync))] {
             let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
             entry.target = self; tray.addItem(entry)
         }
+        tray.addItem(.separator())
+        let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
+        login.target = self
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        loginItem = login; tray.addItem(login)
         tray.addItem(.separator())
         tray.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menuItem.menu = tray
@@ -332,6 +396,7 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
                     self.spinner.stopAnimation(nil)
                 }
             }
+            pairing.onPaired = { [weak self] in self?.bridge.resetWifiTrust() }
             pairing.onConnected = { [weak self] serial in
                 guard let self else { return }
                 self.currentSerial = serial
@@ -339,7 +404,7 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
                 self.bridge.reconnect(serial)
                 if let mirror = self.mirror, mirror.isRunning {
                     self.restartingForAudio = true
-                    self.stopOwnedMirror(mirror)
+                    self.stopOwnedMirror(mirror, reason: "re-paired phone")
                 } else { self.startMirror(serial) }
             }
             pairingWindow = pairing
@@ -392,7 +457,7 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
         audioButton.isEnabled = false
         button.isEnabled = false
         screenStatus.stringValue = "Changing audio…"
-        stopOwnedMirror(mirror)
+        stopOwnedMirror(mirror, reason: "audio setting")
     }
 
     @objc func toggleClipboard() {
@@ -403,7 +468,7 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
         audioButton.isEnabled = false
         button.isEnabled = false
         screenStatus.stringValue = "Changing clipboard sync…"
-        stopOwnedMirror(mirror)
+        stopOwnedMirror(mirror, reason: "clipboard setting")
     }
 
     func makePhoneTools() {
@@ -417,6 +482,10 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
         tools.onOpenFiles = { [weak self] in self?.openReceivedFiles() }
         tools.onLatestFile = { [weak self] in self?.showLatestFile() }
         tools.onOpenPanel = { [weak self] in self?.showPanel() }
+        tools.onCopyPhoneClipboard = { [weak self] in self?.copyPhoneClipboard() }
+        tools.onCopyFile = { [weak self] url in self?.copyReceivedFile(url) }
+        tools.onSendToPhone = { [weak self] urls in self?.sendFilesToPhone(urls) }
+        tools.setRecentFiles(recentFiles)
         refreshPhoneTools()
     }
 
@@ -472,12 +541,22 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
                      keepVisible: mirrorWindowHidden || mirrorMinimized || tools.isKeyWindow)
     }
 
-    func stopOwnedMirror(_ process: Process) {
-        let stop = Process()
-        stop.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        stop.arguments = ["-TERM", "-P", String(process.processIdentifier)]
-        do { try stop.run(); stop.waitUntilExit() } catch { }
-        if process.isRunning { process.terminate() }
+    func stopOwnedMirror(_ process: Process, reason: String) {
+        guard process.isRunning else { return }
+        connectionLog("Mirror stop requested: " + reason)
+        // scrcpy turns SIGTERM into a clean quit and stops its own adb helpers.
+        // Escalate only if it has not exited after a grace period.
+        process.terminate()
+        let pid = process.processIdentifier
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
+            guard process.isRunning else { return }
+            connectionLog("Mirror did not stop after SIGTERM; forcing")
+            let children = Process()
+            children.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            children.arguments = ["-KILL", "-P", String(pid)]
+            try? children.run(); children.waitUntilExit()
+            if process.isRunning { kill(pid, SIGKILL) }
+        }
     }
 
     @objc func phoneSetup() {
@@ -623,7 +702,7 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
         guard !connecting else { return }
         if let mirror, mirror.isRunning {
             mirrorWanted = false
-            stopOwnedMirror(mirror)
+            stopOwnedMirror(mirror, reason: "Close Screen")
             return
         }
         mirrorWanted = true
@@ -673,7 +752,7 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
         process.standardInput = input
         process.standardOutput = pipe; process.standardError = pipe
         mirror = process; mirrorOutput = pipe; mirrorInput = input
-        sawVideo = false; recentLog = ""; mirrorLines = ""; mirrorStarted = Date()
+        sawVideo = false; recentLog = ""; mirrorLines = ""; mirrorStarted = Date(); mirrorUserClosed = false
         button.isEnabled = true
         button.title = "Close Screen"
         let readOutput = {
@@ -693,7 +772,9 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
                 while let newline = self.mirrorLines.firstIndex(of: "\n") {
                     let line = String(self.mirrorLines[..<newline]).trimmingCharacters(in: .whitespacesAndNewlines)
                     self.mirrorLines.removeSubrange(...newline)
-                    if line == "AW_READY" {
+                    if line == "AW_CLOSE_REQUESTED" {
+                        self.mirrorUserClosed = true
+                    } else if line == "AW_READY" {
                         self.sawVideo = true; self.screenStatus.stringValue = "Screen connected wirelessly"
                         if self.mirrorWindowHidden { self.sendMirrorCommand("hide") }
                     } else if line.hasPrefix("AW_FRAME:") {
@@ -716,10 +797,10 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
         process.terminationHandler = { _ in
             DispatchQueue.main.async {
                 guard !self.quitting, self.mirror === process else { return }
-                connectionLog("Mirror ended status=\(process.terminationStatus) video=\(self.sawVideo)\n\(self.recentLog)")
+                connectionLog("Mirror ended status=\(process.terminationStatus) video=\(self.sawVideo) userClosed=\(self.mirrorUserClosed) wanted=\(self.mirrorWanted)\n\(self.recentLog)")
                 pipe.fileHandleForReading.readabilityHandler = nil
                 try? input.fileHandleForWriting.close()
-                if !self.restartingForAudio && process.terminationStatus == 0 && self.sawVideo && !self.recentLog.contains("Device disconnected") { self.mirrorWanted = false }
+                if !self.restartingForAudio && self.mirrorUserClosed { self.mirrorWanted = false }
                 if self.mirrorWanted && !self.restartingForAudio {
                     if self.sawVideo && Date().timeIntervalSince(self.mirrorStarted) > 60 { self.mirrorBackoff.succeeded() }
                     self.mirrorBackoff.failed()
@@ -745,7 +826,7 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
             screenStatus.stringValue = "Opening your phone screen…"
             DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
                 guard self.mirror === process, process.isRunning, !self.sawVideo else { return }
-                self.stopOwnedMirror(process)
+                self.stopOwnedMirror(process, reason: "no video within 60 s")
                 self.screenStatus.stringValue = "Screen startup interrupted · retrying after a short wait"
             }
         }
@@ -756,7 +837,12 @@ final class Launcher: NSObject, NSApplicationDelegate, UNUserNotificationCenterD
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) {
         quitting = true; if let activity = awakeActivity { ProcessInfo.processInfo.endActivity(activity) }; mirrorRetry?.invalidate(); toolsTimer?.invalidate(); tools.orderOut(nil); bridge.stop()
-        if let mirror, mirror.isRunning { stopOwnedMirror(mirror) }
+        if let mirror, mirror.isRunning {
+            stopOwnedMirror(mirror, reason: "app quitting")
+            let deadline = Date().addingTimeInterval(2.5)
+            while mirror.isRunning && Date() < deadline { usleep(50_000) }
+            if mirror.isRunning { kill(mirror.processIdentifier, SIGKILL) }
+        }
     }
 }
 

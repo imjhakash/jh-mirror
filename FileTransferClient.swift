@@ -6,10 +6,13 @@ struct SharedFile: Decodable {
     let name: String
     let size: Int64
     let sha256: String
+    /// "clipboard" when the phone asked for this item to be pasted on the Mac.
+    let purpose: String?
+    var isClipboard: Bool { purpose == "clipboard" }
 }
 private struct FileManifest: Decodable { let files: [SharedFile] }
 private struct FileReceipt: Codable { let path: String; let sha256: String; let size: Int64 }
-private struct FileConnection { let baseURL: String; let token: String }
+private struct FileConnection { let baseURL: String; let token: String; let pin: String? }
 private final class FileHTTPResult {
     let lock = NSLock()
     var data: Data?
@@ -22,6 +25,8 @@ final class FileTransferClient {
         .appendingPathComponent("Android Wireless", isDirectory: true)
     var onStatus: ((String) -> Void)?
     var onReceived: ((URL) -> Void)?
+    /// Called on the main queue after a clipboard item is saved and verified.
+    var onClipboard: ((URL) -> Void)?
     private let queue = DispatchQueue(label: "local.androidwireless.files", qos: .utility)
     private let lock = NSLock()
     private var connection: FileConnection?
@@ -45,9 +50,10 @@ final class FileTransferClient {
     }
     func tick(port: Int, token: String) { tick(baseURL: "http://127.0.0.1:\(port)", token: token, pin: nil) }
     func tick(baseURL: String, token: String, pin: String?) {
-        delegate.trust(pin)
         lock.lock()
-        connection = FileConnection(baseURL: baseURL, token: token)
+        // The pin travels with its connection so a transport switch can never
+        // pair an HTTPS endpoint with a missing or different certificate pin.
+        connection = FileConnection(baseURL: baseURL, token: token, pin: pin)
         guard !busy, !stopped else { lock.unlock(); return }
         busy = true; lock.unlock()
         queue.async {
@@ -84,6 +90,7 @@ final class FileTransferClient {
     private func request(_ path: String, method: String = "GET", limit: Int) throws -> Data {
         lock.lock(); let current = connection; let isStopped = stopped; lock.unlock()
         guard !isStopped, let current else { throw error("Phone disconnected.") }
+        delegate.trust(current.pin) // Requests are serial on `queue`, so this pin applies to this request.
         var request = URLRequest(url: URL(string: current.baseURL + path)!)
         request.httpMethod = method
         request.setValue("Bearer \(current.token)", forHTTPHeaderField: "Authorization")
@@ -193,7 +200,11 @@ final class FileTransferClient {
         try FileManager.default.removeItem(at: partial)
         hasReceived = true
         status("Saved · \(saved.lastPathComponent)")
-        DispatchQueue.main.async { [weak self] in self?.onReceived?(saved) }
+        let clipboard = file.isClipboard
+        DispatchQueue.main.async { [weak self] in
+            self?.onReceived?(saved)
+            if clipboard { self?.onClipboard?(saved) }
+        }
         _ = try request("/files/\(file.id)/ack?sha256=\(file.sha256)", method: "POST", limit: 1024)
     }
 }

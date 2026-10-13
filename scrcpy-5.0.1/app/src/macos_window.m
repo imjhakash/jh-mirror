@@ -10,6 +10,13 @@
 #include "events.h"
 
 static id drag_monitor;
+static id quit_key_monitor;
+
+// Tells the launcher this exit was requested by the user, so it must not reopen the window.
+static void announce_user_close(void) {
+    if (!getenv("AW_PHONE_TOOLS")) return;
+    puts("AW_CLOSE_REQUESTED"); fflush(stdout);
+}
 static NSMutableArray *observers;
 static SDL_Window *phone_sdl_window;
 static NSWindow *phone_window;
@@ -44,7 +51,7 @@ static NSView *window_controls;
 - (void)minimizePhone:(id)sender;
 @end
 @implementation AWWindowControls
-- (void)closePhone:(id)sender { (void)sender; sc_push_event(SDL_EVENT_QUIT); }
+- (void)closePhone:(id)sender { (void)sender; announce_user_close(); sc_push_event(SDL_EVENT_QUIT); }
 - (void)minimizePhone:(id)sender { (void)sender; if (phone_sdl_window) SDL_MinimizeWindow(phone_sdl_window); }
 @end
 
@@ -103,6 +110,11 @@ void sc_macos_window_setup(SDL_Window *sdl_window) {
             }];
     }
     if (!getenv("AW_PHONE_TOOLS")) return;
+    quit_key_monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event) {
+        NSEventModifierFlags mods = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+        if (mods == NSEventModifierFlagCommand && [event.charactersIgnoringModifiers isEqualToString:@"q"]) announce_user_close();
+        return event;
+    }];
     observers = [[NSMutableArray alloc] init];
     NSArray *names = @[ NSWindowDidMoveNotification, NSWindowDidResizeNotification,
         NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
@@ -145,6 +157,7 @@ void sc_macos_window_ready(SDL_Window *window) {
 }
 void sc_macos_window_cleanup(void) {
     if (drag_monitor) { [NSEvent removeMonitor:drag_monitor]; drag_monitor = nil; }
+    if (quit_key_monitor) { [NSEvent removeMonitor:quit_key_monitor]; quit_key_monitor = nil; }
     for (id observer in observers) [[NSNotificationCenter defaultCenter] removeObserver:observer];
 #if !__has_feature(objc_arc)
     [observers release];

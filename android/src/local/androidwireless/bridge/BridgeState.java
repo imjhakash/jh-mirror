@@ -9,46 +9,95 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.*;
+import javax.net.ssl.SSLSocket;
 
 final class BridgeState {
     static final int PORT = 38475;
+    static final int PROTOCOL = 5;
     static final String SESSION = UUID.randomUUID().toString();
     static volatile boolean listenerConnected;
     private static long sequence;
     private static final ArrayDeque<JSONObject> events = new ArrayDeque<>();
     private static ServerSocket server;
     private static Context context;
-    private static final ThreadPoolExecutor clients = new ThreadPoolExecutor(2, 2, 30,
-        TimeUnit.SECONDS, new ArrayBlockingQueue<>(8), r -> {
-            Thread t = new Thread(r, "wireless-client"); t.setDaemon(true); return t;
-        });
+    // The ADB loopback and the LAN listener use separate pools, so unauthenticated
+    // LAN clients can never starve the ADB fallback (or each other for long).
+    private static final ThreadPoolExecutor loopbackClients = pool("wireless-loopback-client", 2, 8);
+    private static final ThreadPoolExecutor lanClients = pool("wireless-lan-client", 4, 4);
+    private static final ScheduledExecutorService deadlines = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "wireless-deadline"); t.setDaemon(true); return t;
+    });
+    private static final Map<InetAddress, Integer> lanPerAddress = new HashMap<>();
+    private static final int MAX_LAN_PER_ADDRESS = 3;
+    /** Unauthenticated clients must finish TLS + request headers within this time. */
+    private static final long HEADER_DEADLINE_MS = 6000;
 
-    static synchronized void start(Context app) {
+    private static ThreadPoolExecutor pool(String name, int threads, int queue) {
+        return new ThreadPoolExecutor(threads, threads, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(queue), r -> {
+            Thread t = new Thread(r, name); t.setDaemon(true); return t;
+        });
+    }
+
+    /** Returns true only when the loopback listener is running. */
+    static synchronized boolean start(Context app) {
         context = app.getApplicationContext();
-        if (server != null) return;
+        if (server != null && !server.isClosed()) return true;
         FileOutbox.cleanupInterruptedPreparation(context);
+        for (int attempt = 0; attempt < 3; attempt++) {
+            ServerSocket listener = null;
+            try {
+                listener = new ServerSocket();
+                listener.setReuseAddress(true);
+                listener.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), PORT), 8);
+                final ServerSocket accepted = listener;
+                server = listener;
+                Thread accept = new Thread(() -> {
+                    while (!accepted.isClosed()) {
+                        try { accept(accepted.accept(), false); }
+                        catch (IOException e) { break; }
+                    }
+                    synchronized (BridgeState.class) { if (server == accepted) server = null; }
+                }, "wireless-loopback");
+                accept.setDaemon(true); accept.start();
+                return true;
+            } catch (IOException e) {
+                android.util.Log.w("AndroidWireless", "Loopback listener bind failed", e);
+                if (listener != null) try { listener.close(); } catch (IOException ignored) { }
+                server = null;
+                try { Thread.sleep(250); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); break; }
+            }
+        }
+        return false;
+    }
+
+    static void accept(Socket socket, boolean lan) {
         try {
-            server = new ServerSocket();
-            server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), PORT), 8);
-            Thread accept = new Thread(() -> {
-                while (!server.isClosed()) {
-                    try {
-                        accept(server.accept());
-                    } catch (IOException e) { break; }
-                }
-            }, "wireless-loopback");
-            accept.setDaemon(true); accept.start();
-        } catch (IOException e) {
-            if (server != null) try { server.close(); } catch (IOException ignored) { }
-            server = null;
+            socket.setSoTimeout(5000); socket.setTcpNoDelay(true); socket.setKeepAlive(true);
+        } catch (IOException e) { closeQuietly(socket); return; }
+        final InetAddress remote = socket.getInetAddress();
+        if (lan) {
+            synchronized (lanPerAddress) {
+                int open = lanPerAddress.containsKey(remote) ? lanPerAddress.get(remote) : 0;
+                if (open >= MAX_LAN_PER_ADDRESS) { closeQuietly(socket); return; }
+                lanPerAddress.put(remote, open + 1);
+            }
+        }
+        Runnable task = () -> {
+            try { serve(socket, lan); }
+            finally { if (lan) release(remote); }
+        };
+        try { (lan ? lanClients : loopbackClients).execute(task); }
+        catch (RejectedExecutionException error) { closeQuietly(socket); if (lan) release(remote); }
+    }
+
+    private static void release(InetAddress remote) {
+        synchronized (lanPerAddress) {
+            Integer open = lanPerAddress.get(remote);
+            if (open == null || open <= 1) lanPerAddress.remove(remote); else lanPerAddress.put(remote, open - 1);
         }
     }
 
-    static void accept(Socket socket) throws IOException {
-        socket.setSoTimeout(5000); socket.setTcpNoDelay(true); socket.setKeepAlive(true);
-        try { clients.execute(() -> serve(socket)); }
-        catch (RejectedExecutionException error) { socket.close(); }
-    }
+    private static void closeQuietly(Socket socket) { try { socket.close(); } catch (IOException ignored) { } }
 
     static boolean enabled() { return context != null && context.getSharedPreferences("bridge", 0).getBoolean("enabled", true); }
 
@@ -66,7 +115,7 @@ final class BridgeState {
     private static synchronized String response(long after, boolean health) throws Exception {
         JSONObject result = new JSONObject();
         result.put("session", SESSION);
-        result.put("protocolVersion", 4);
+        result.put("protocolVersion", PROTOCOL);
         result.put("lanCertificate", WifiBridge.certificate);
         result.put("lanIdentity", WifiBridge.identity);
         result.put("lanPort", WifiBridge.PORT);
@@ -102,9 +151,13 @@ final class BridgeState {
         return bytes.toString("UTF-8");
     }
 
-    private static void serve(Socket socket) {
+    private static void serve(Socket socket, boolean lan) {
+        // A hard deadline for the unauthenticated phase: slow clients are closed
+        // even if they keep trickling bytes under the per-read timeout.
+        ScheduledFuture<?> deadline = deadlines.schedule(() -> closeQuietly(socket), HEADER_DEADLINE_MS, TimeUnit.MILLISECONDS);
         try (Socket client = socket) {
-            InputStream input = client.getInputStream();
+            if (client instanceof SSLSocket) ((SSLSocket)client).startHandshake();
+            InputStream input = new BufferedInputStream(client.getInputStream(), 4096);
             String request = line(input);
             String auth = "";
             for (int i = 0; i < 32; i++) {
@@ -120,6 +173,7 @@ final class BridgeState {
                 ("Bearer " + token).getBytes(StandardCharsets.UTF_8), auth.getBytes(StandardCharsets.UTF_8))) {
                 send(client, 401, "{\"error\":\"unauthorized\"}"); return;
             }
+            deadline.cancel(false);
             ConnectionService.clientActive();
             String[] parts = request.split(" ");
             if (parts.length < 2) {
@@ -173,7 +227,9 @@ final class BridgeState {
             if (query != null && query.startsWith("after=")) after = Long.parseLong(query.substring(6));
             send(client, 200, response(after, uri.getPath().equals("/health")));
         } catch (Exception error) {
-            if (error instanceof javax.net.ssl.SSLException) android.util.Log.w("AndroidWireless", "TLS handshake failed", error);
+            if (error instanceof javax.net.ssl.SSLException && lan) android.util.Log.w("AndroidWireless", "TLS handshake failed", error);
+        } finally {
+            deadline.cancel(false);
         }
     }
 

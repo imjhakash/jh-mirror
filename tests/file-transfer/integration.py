@@ -3,8 +3,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 EXE = pathlib.Path('/private/tmp/android-wireless-file-tests')
 subprocess.run(['swiftc', str(ROOT/'FileTransferClient.swift'), str(ROOT/'WifiConnection.swift'), str(ROOT/'PairPhone.swift'), str(ROOT/'tests/TestSupport.swift'), str(pathlib.Path(__file__).with_name('main.swift')), '-module-cache-path', '/private/tmp/android-wireless-swift-cache', '-o', str(EXE)], check=True)
 files = []
-for name, data in [('report.txt', b'first file'), ('report.txt', b'second file'), ('../Photo.jpg', bytes(range(256))*10000), ('corruption.bin', bytes(range(256))*9000), ('empty.txt', b'')]:
+for name, data in [('report.txt', b'first file'), ('report.txt', b'second file'), ('../Photo.jpg', bytes(range(256))*10000), ('corruption.bin', bytes(range(256))*9000), ('empty.txt', b''), ('copied photo.png', b'\x89PNG fake image')]:
     files.append(dict(id=str(uuid.uuid4()), name=name, size=len(data), sha256=hashlib.sha256(data).hexdigest(), data=data))
+files[-1]['purpose'] = 'clipboard'
 pending = {f['id']:f for f in files}
 chunk_requests = []; acks = []; dropped = False; corrupted = False; ack_failed = False
 class Server(http.server.BaseHTTPRequestHandler):
@@ -54,5 +55,6 @@ with tempfile.TemporaryDirectory(prefix='wireless-file-tests-') as temp:
     assert chunk_requests.count((corrupt,0))==2, 'Corrupted download must restart'
     assert chunk_requests.count((first,0))==1 and acks.count(first)==2, 'ACK retry must not duplicate download'
     assert len(list(folder.iterdir()))==len(files)+2
+    assert result.stdout.count('Clipboard:')==1 and 'Clipboard: copied photo.png' in result.stdout, 'Only clipboard items reach the Mac clipboard'
 server.shutdown()
-print('PASS: interrupted transfer resumes; corrupt content restarts; ACK retry is idempotent; original names never overwrite existing files; traversal names are sanitized; zero-byte file saves.')
+print('PASS: interrupted transfer resumes; corrupt content restarts; ACK retry is idempotent; original names never overwrite existing files; traversal names are sanitized; zero-byte file saves; clipboard items are flagged for paste.')

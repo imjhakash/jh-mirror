@@ -14,8 +14,10 @@ public final class SetupReceiver extends BroadcastReceiver {
             String token = intent.getStringExtra("token");
             if (token == null || !token.matches("[0-9a-f]{64}")) { setResultCode(1); return; }
             prefs.edit().putString("token", token).commit();
-            BridgeState.start(context); WifiBridge.start(context); ConnectionService.ensure(context);
-            setResultCode(0);
+            boolean listening = BridgeState.start(context);
+            WifiBridge.start(context); ConnectionService.ensure(context);
+            // Result 0 is reported only when the Mac can actually reach the bridge.
+            setResultCode(listening ? 0 : 2);
         } else if ("local.androidwireless.bridge.TEST".equals(intent.getAction())) {
             MainActivity.postTest(context); setResultCode(0);
         } else if ("local.androidwireless.bridge.TEST_BRIDGE".equals(intent.getAction())) {

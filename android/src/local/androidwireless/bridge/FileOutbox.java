@@ -40,7 +40,24 @@ final class FileOutbox {
         if (name.isEmpty() || name.equals(".") || name.equals("..")) name = "Shared file";
         return name.length() > 180 ? name.substring(0, 180) : name;
     }
-    static void stage(Context c, Uri uri, Progress progress) throws Exception {
+    /** Files queued with this purpose are placed on the Mac clipboard after they arrive. */
+    static final String CLIPBOARD = "clipboard";
+    static final int MAX_QUEUE = 100;
+    /** Items still being prepared. Counted with the queue so concurrent shares cannot exceed it. */
+    private static int preparing;
+
+    private static void reserve(Context c) throws IOException {
+        synchronized (FileOutbox.class) {
+            if (list(c).length() + preparing >= MAX_QUEUE)
+                throw new IOException("Queue is full. Connect your Mac to finish pending files.");
+            preparing++;
+        }
+    }
+    private static void unreserve() { synchronized (FileOutbox.class) { preparing--; } }
+
+    static void stage(Context c, Uri uri, Progress progress) throws Exception { stage(c, uri, null, progress); }
+
+    static void stage(Context c, Uri uri, String purpose, Progress progress) throws Exception {
         if (uri == null || !"content".equals(uri.getScheme()))
             throw new IOException("Select a file using the Share menu or file picker.");
         String name = "Shared file"; long size = -1;
@@ -55,16 +72,34 @@ final class FileOutbox {
         name = safeName(name);
         if (size > MAX_FILE) throw new IOException("Maximum file size is 2 GB.");
         File dir = directory(c);
-        if (list(c).length() >= 100) throw new IOException("Queue is full. Connect your Mac to finish pending files.");
         if (size >= 0 && dir.getUsableSpace() < size + 32 * 1024 * 1024)
             throw new IOException("Not enough free space to prepare this file.");
+        String mime = c.getContentResolver().getType(uri);
+        reserve(c);
+        try (InputStream in = c.getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new IOException("The source app did not provide a readable file.");
+            write(c, in, name, mime, purpose, progress);
+        } finally { unreserve(); }
+    }
+
+    /** Queues copied text. It reaches the Mac clipboard as plain text. */
+    static void stageText(Context c, CharSequence text, Progress progress) throws Exception {
+        byte[] bytes = text.toString().getBytes("UTF-8");
+        if (bytes.length > 8 * 1024 * 1024) throw new IOException("Copied text is too large.");
+        String stamp = new java.text.SimpleDateFormat("yyyy-MM-dd HH.mm.ss", Locale.US).format(new Date());
+        reserve(c);
+        try { write(c, new ByteArrayInputStream(bytes), "Phone clipboard " + stamp + ".txt", "text/plain", CLIPBOARD, progress); }
+        finally { unreserve(); }
+    }
+
+    private static void write(Context c, InputStream in, String name, String mime, String purpose, Progress progress) throws Exception {
+        File dir = directory(c);
         String id = UUID.randomUUID().toString();
         File partial = new File(dir, id + ".partial");
         MessageDigest hash = MessageDigest.getInstance("SHA-256");
         long total = 0; long lastProgress = 0;
         try {
-            try (InputStream in = c.getContentResolver().openInputStream(uri); FileOutputStream out = new FileOutputStream(partial)) {
-                if (in == null) throw new IOException("The source app did not provide a readable file.");
+            try (FileOutputStream out = new FileOutputStream(partial)) {
                 byte[] buffer = new byte[65536]; int count;
                 while ((count = in.read(buffer)) != -1) {
                     total += count;
@@ -82,14 +117,16 @@ final class FileOutbox {
             JSONObject item = new JSONObject();
             item.put("id", id); item.put("name", name); item.put("size", total);
             item.put("sha256", hex(hash.digest())); item.put("created", System.currentTimeMillis());
-            String mime = c.getContentResolver().getType(uri);
             item.put("mime", mime == null ? "application/octet-stream" : mime);
+            if (purpose != null) item.put("purpose", purpose);
             File metadata = new File(dir, id + ".json.tmp");
             try (FileOutputStream out = new FileOutputStream(metadata)) {
                 out.write(item.toString().getBytes("UTF-8")); out.getFD().sync();
             }
             if (!metadata.renameTo(new File(dir, id + ".json"))) throw new IOException("Could not queue file.");
-            progress.update("Queued: " + name + "\nYour Mac receives it automatically when connected. Original file stays on the phone.");
+            progress.update(CLIPBOARD.equals(purpose)
+                ? "Copied to your Mac clipboard: " + name + "\nPress ⌘V on the Mac to paste."
+                : "Queued: " + name + "\nYour Mac receives it automatically when connected. Original file stays on the phone.");
         } catch (Exception e) {
             partial.delete(); new File(dir, id + ".data").delete(); new File(dir, id + ".json.tmp").delete();
             throw e;

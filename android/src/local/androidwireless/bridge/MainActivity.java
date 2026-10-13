@@ -40,6 +40,14 @@ public final class MainActivity extends Activity {
         TextView fileHelp = new TextView(this);
         fileHelp.setText("Or select files/photos in another app → Share → Android Wireless. Original files stay on your phone. Your Mac saves them in Downloads / Android Wireless.\n");
         layout.addView(fileHelp);
+        Button copy = new Button(this); copy.setText("Copy phone clipboard to Mac");
+        copy.setOnClickListener(v -> startActivity(new Intent(this, ClipboardActivity.class)));
+        layout.addView(copy);
+        TextView copyHelp = new TextView(this);
+        copyHelp.setText("Paste phone images or text on the Mac with ⌘V (WhatsApp, Notes, Mail, Finder and more):\n"
+            + "• Share a photo → Copy to Mac\n"
+            + "• Or copy anything, then tap Copy to Mac in the Android Wireless notification or the Quick Settings tile.\n");
+        layout.addView(copyHelp);
         Button access = new Button(this); access.setText("Enable notification access");
         access.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         layout.addView(access);
