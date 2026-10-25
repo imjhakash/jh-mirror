@@ -1,4 +1,4 @@
-package local.androidwireless.bridge;
+package com.johirulhoqakash.jhmirror;
 
 import android.content.Context;
 import org.json.JSONArray;
@@ -13,7 +13,7 @@ import javax.net.ssl.SSLSocket;
 
 final class BridgeState {
     static final int PORT = 38475;
-    static final int PROTOCOL = 5;
+    static final int PROTOCOL = 15;
     static final String SESSION = UUID.randomUUID().toString();
     static volatile boolean listenerConnected;
     private static long sequence;
@@ -61,7 +61,7 @@ final class BridgeState {
                 accept.setDaemon(true); accept.start();
                 return true;
             } catch (IOException e) {
-                android.util.Log.w("AndroidWireless", "Loopback listener bind failed", e);
+                android.util.Log.w("JHMirror", "Loopback listener bind failed", e);
                 if (listener != null) try { listener.close(); } catch (IOException ignored) { }
                 server = null;
                 try { Thread.sleep(250); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); break; }
@@ -122,6 +122,9 @@ final class BridgeState {
         result.put("sequence", sequence);
         result.put("connected", listenerConnected);
         result.put("enabled", enabled());
+        result.put("device", DeviceStatus.info(context));
+        result.put("adbWifi", AdbWifi.enabled(context));
+        result.put("canEnableAdbWifi", AdbWifi.canEnable(context));
         JSONArray items = new JSONArray();
         JSONObject icons = new JSONObject();
         if (!health && enabled()) for (JSONObject item : events) {
@@ -160,14 +163,18 @@ final class BridgeState {
             InputStream input = new BufferedInputStream(client.getInputStream(), 4096);
             String request = line(input);
             String auth = "";
+            int contentLength = 0;
             for (int i = 0; i < 32; i++) {
                 String header = line(input);
                 if (header.isEmpty()) break;
                 int colon = header.indexOf(':');
                 if (colon > 0 && header.substring(0, colon).equalsIgnoreCase("Authorization"))
                     auth = header.substring(colon + 1).trim();
+                if (colon > 0 && header.substring(0, colon).equalsIgnoreCase("Content-Length"))
+                    contentLength = Integer.parseInt(header.substring(colon + 1).trim());
                 if (i == 31) throw new IOException("Too many headers");
             }
+            if (contentLength < 0 || contentLength > 65536) throw new IOException("Body too large");
             String token = context.getSharedPreferences("bridge", 0).getString("token", "");
             if (token.length() != 64 || !MessageDigest.isEqual(
                 ("Bearer " + token).getBytes(StandardCharsets.UTF_8), auth.getBytes(StandardCharsets.UTF_8))) {
@@ -181,6 +188,49 @@ final class BridgeState {
             }
             URI uri = URI.create(parts[1]);
             String path = uri.getPath();
+            if (parts[0].equals("POST") && path.equals("/device/status")) {
+                if (contentLength > 20000) { send(client, 400, "{\"error\":\"report too large\"}"); return; }
+                byte[] body = new byte[contentLength]; int read = 0;
+                while (read < body.length) { int n = input.read(body, read, body.length-read); if (n < 0) throw new EOFException(); read += n; }
+                boolean saved = DeviceStatus.saveReport(context, body);
+                send(client, saved ? 200 : 400, "{\"saved\":" + saved + "}"); return;
+            }
+            if (parts[0].equals("POST") && path.startsWith("/notifications/")) {
+                // A small UTF-8 body carries reply text for notification actions.
+                byte[] body = new byte[contentLength];
+                int read = 0;
+                while (read < contentLength) {
+                    int n = input.read(body, read, contentLength - read);
+                    if (n < 0) throw new EOFException();
+                    read += n;
+                }
+                Map<String, String> query = query(uri.getRawQuery());
+                String key = query.get("key");
+                if (key == null || key.isEmpty() || key.length() > 1000) { send(client, 400, "{\"error\":\"key\"}"); return; }
+                String result;
+                if (path.equals("/notifications/open")) result = NotificationBridge.open(context, key, query.get("package"));
+                else if (path.equals("/notifications/dismiss")) result = NotificationBridge.dismiss(key);
+                else if (path.equals("/notifications/action")) {
+                    int index;
+                    try { index = Integer.parseInt(query.get("index")); } catch (RuntimeException e) { index = -1; }
+                    result = NotificationBridge.action(context, key, index, new String(body, StandardCharsets.UTF_8));
+                } else { send(client, 404, "{\"error\":\"not found\"}"); return; }
+                boolean ok = result.equals("done") || result.equals("opened") || result.equals("app");
+                send(client, ok ? 200 : 409, "{\"result\":\"" + result + "\"}"); return;
+            }
+            if (parts[0].equals("POST") && path.equals("/settings/notifications")) {
+                // The paired Mac can turn "Send notifications to Mac" back on (or off).
+                boolean on = "1".equals(query(uri.getRawQuery()).get("on"));
+                context.getSharedPreferences("bridge", 0).edit().putBoolean("enabled", on).apply();
+                if (!on) clear();
+                send(client, 200, "{\"result\":\"done\",\"enabled\":" + on + "}"); return;
+            }
+            if (parts[0].equals("POST") && path.equals("/adb/wifi")) {
+                // Paired Mac only (token checked above): turn Wireless debugging back on.
+                boolean requested = AdbWifi.enable(context);
+                send(client, requested ? 200 : 403, "{\"requested\":" + requested
+                    + ",\"enabled\":" + AdbWifi.enabled(context) + "}"); return;
+            }
             if (parts[0].equals("GET") && path.equals("/files")) {
                 JSONObject manifest = new JSONObject(); manifest.put("files", FileOutbox.list(context));
                 send(client, 200, manifest.toString()); return;
@@ -222,15 +272,26 @@ final class BridgeState {
             if (!uri.getPath().equals("/events") && !uri.getPath().equals("/health")) {
                 send(client, 404, "{\"error\":\"not found\"}"); return;
             }
-            long after = 0;
-            String query = uri.getQuery();
-            if (query != null && query.startsWith("after=")) after = Long.parseLong(query.substring(6));
+            Map<String, String> params = query(uri.getRawQuery());
+            long after = params.containsKey("after") ? Long.parseLong(params.get("after")) : 0;
             send(client, 200, response(after, uri.getPath().equals("/health")));
         } catch (Exception error) {
-            if (error instanceof javax.net.ssl.SSLException && lan) android.util.Log.w("AndroidWireless", "TLS handshake failed", error);
+            if (error instanceof javax.net.ssl.SSLException && lan) android.util.Log.w("JHMirror", "TLS handshake failed", error);
         } finally {
             deadline.cancel(false);
         }
+    }
+
+    /** Decodes `a=b&c=d` from a raw (still percent-encoded) query. */
+    private static Map<String, String> query(String raw) throws UnsupportedEncodingException {
+        Map<String, String> values = new HashMap<>();
+        if (raw == null) return values;
+        for (String pair : raw.split("&")) {
+            int equals = pair.indexOf('=');
+            if (equals <= 0) continue;
+            values.put(URLDecoder.decode(pair.substring(0, equals), "UTF-8"), URLDecoder.decode(pair.substring(equals + 1), "UTF-8"));
+        }
+        return values;
     }
 
     private static void send(Socket client, int status, String body) throws IOException {

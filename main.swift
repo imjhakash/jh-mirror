@@ -1140,44 +1140,21 @@ final class Launcher: NSObject, NSPopoverDelegate, NSApplicationDelegate, UNUser
     }
 
     func answerIncomingCall() {
-        guard let call = pendingCall else { return }
         pendingCall = nil
-        // Find the "answer" action index
-        var answerIndex: Int? = nil
-        if let actions = call.actions {
-            for (i, action) in actions.enumerated() {
-                if let title = action?.title.lowercased(),
-                   title.contains("answer") || title.contains("accept") {
-                    answerIndex = i; break
-                }
-            }
-        }
-        if let idx = answerIndex {
-            bridge.notificationCommand("action", key: call.key, package: call.package, index: idx) { _ in }
-        } else {
-            // Fallback: open the notification (brings up the dialer)
-            bridge.notificationCommand("open", key: call.key, package: call.package) { _ in }
+        let serial = adbVerified(within: 120) ? currentSerial : nil
+        guard let serial else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = command(["-s", serial, "shell", "input", "keyevent", "5"], timeout: 5)
         }
         enableSpeakerphoneAfterAnswer()
     }
 
     func declineIncomingCall() {
-        guard let call = pendingCall else { return }
         pendingCall = nil
-        // Find the "decline/reject" action index
-        var declineIndex: Int? = nil
-        if let actions = call.actions {
-            for (i, action) in actions.enumerated() {
-                if let title = action?.title.lowercased(),
-                   title.contains("declin") || title.contains("reject") || title.contains("hang") || title.contains("end") {
-                    declineIndex = i; break
-                }
-            }
-        }
-        if let idx = declineIndex {
-            bridge.notificationCommand("action", key: call.key, package: call.package, index: idx) { _ in }
-        } else {
-            bridge.notificationCommand("dismiss", key: call.key, package: call.package) { _ in }
+        let serial = adbVerified(within: 120) ? currentSerial : nil
+        guard let serial else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = command(["-s", serial, "shell", "input", "keyevent", "6"], timeout: 5)
         }
     }
 

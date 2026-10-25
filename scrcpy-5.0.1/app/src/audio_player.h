@@ -28,6 +28,7 @@ struct sc_audio_player {
     SDL_AudioStream *stream;
     SDL_AudioDeviceID device; // owned by the audio stream
     struct sc_audio_regulator audioreg;
+    bool aw_announced;
 };
 
 void

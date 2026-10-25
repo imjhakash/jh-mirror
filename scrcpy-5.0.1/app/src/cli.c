@@ -3040,6 +3040,13 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
 
     bool otg = false;
     bool v4l2 = false;
+    bool camera_sink = false;
+#ifdef __APPLE__
+    // This headless consumer still needs video. --no-window must not discard it.
+    const char *camera_uid = getenv("JH_CAMERA_DEVICE_UID");
+    camera_sink = camera_uid && *camera_uid && opts->video
+        && opts->video_source == SC_VIDEO_SOURCE_CAMERA;
+#endif
 #ifdef HAVE_USB
     otg = opts->otg;
 #endif
@@ -3065,7 +3072,7 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
     }
 
     if (opts->video && !opts->video_playback && !opts->record_filename
-            && !v4l2) {
+            && !v4l2 && !camera_sink) {
         LOGI("No video playback, no recording, no V4L2 sink: video disabled");
         opts->video = false;
     }

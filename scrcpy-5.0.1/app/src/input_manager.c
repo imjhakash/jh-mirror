@@ -1181,6 +1181,20 @@ sc_input_manager_handle_event(struct sc_input_manager *im,
             if (im->controller && im->kp && !im->camera && !im->disconnected)
                 set_device_clipboard(im, false, SC_SEQUENCE_INVALID);
             break;
+        case SC_EVENT_TOOL_DISPLAY_OFF:
+        case SC_EVENT_TOOL_DISPLAY_ON:
+            // JH Mirror: phone display dark (or back on) while mirroring continues.
+            if (im->controller && !im->camera && !im->disconnected)
+                set_display_power(im, event->type == SC_EVENT_TOOL_DISPLAY_ON);
+            break;
+        case SC_EVENT_TOOL_KEEP_ACTIVE:
+        case SC_EVENT_TOOL_RELEASE_DISPLAY:
+            if (im->controller && !im->camera && !im->disconnected) {
+                struct sc_control_msg msg = {.type = event->type == SC_EVENT_TOOL_KEEP_ACTIVE
+                    ? SC_CONTROL_MSG_TYPE_JH_KEEP_ACTIVE : SC_CONTROL_MSG_TYPE_JH_RELEASE_DISPLAY};
+                sc_controller_push_msg(im->controller, &msg);
+            }
+            break;
         case SDL_EVENT_TEXT_INPUT:
             sc_input_manager_process_text_input(im, &event->text);
             break;

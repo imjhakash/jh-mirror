@@ -3,6 +3,9 @@
 #include "util/log.h"
 #include "util/memory.h"
 #include "SDL3/SDL_hints.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /** Downcast frame_sink to sc_audio_player */
 #define DOWNCAST(SINK) container_of(SINK, struct sc_audio_player, frame_sink)
@@ -44,6 +47,10 @@ sc_audio_player_frame_sink_push(struct sc_frame_sink *sink,
     struct sc_audio_player *ap = DOWNCAST(sink);
 
     bool ok = sc_audio_regulator_push(&ap->audioreg, frame);
+    if (ok && !ap->aw_announced && (getenv("AW_AUDIO_OUTPUT_DEVICE") || getenv("AW_PHONE_TOOLS"))) {
+        ap->aw_announced = true;
+        puts(getenv("AW_AUDIO_OUTPUT_DEVICE") ? "AW_MIC_READY" : "AW_AUDIO_READY"); fflush(stdout);
+    }
     return ok ? SC_SINK_OK : SC_SINK_KO;
 }
 
@@ -103,7 +110,27 @@ sc_audio_player_frame_sink_open(struct sc_frame_sink *sink,
         .channels = nb_channels,
     };
 
-    ap->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+    ap->aw_announced = false;
+    SDL_AudioDeviceID output = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+    const char *requested = getenv("AW_AUDIO_OUTPUT_DEVICE");
+    if (requested && *requested) {
+        // A call microphone must never fall back to speakers (feedback / privacy).
+        int count = 0;
+        SDL_AudioDeviceID *devices = SDL_GetAudioPlaybackDevices(&count);
+        output = 0;
+        for (int i = 0; devices && i < count; ++i) {
+            const char *name = SDL_GetAudioDeviceName(devices[i]);
+            if (name && !strcmp(name, requested)) { output = devices[i]; break; }
+        }
+        SDL_free(devices);
+        if (!output) {
+            LOGE("Requested call audio output is unavailable");
+            free(ap->aout_buffer);
+            sc_audio_regulator_destroy(&ap->audioreg);
+            return false;
+        }
+    }
+    ap->stream = SDL_OpenAudioDeviceStream(output,
                                            &spec,
                                            sc_audio_player_stream_callback, ap);
     if (!ap->stream) {

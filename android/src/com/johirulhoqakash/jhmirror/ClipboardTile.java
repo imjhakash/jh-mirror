@@ -1,4 +1,4 @@
-package local.androidwireless.bridge;
+package com.johirulhoqakash.jhmirror;
 
 import android.app.PendingIntent;
 import android.content.Intent;

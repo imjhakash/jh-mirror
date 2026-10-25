@@ -94,6 +94,7 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
     private final boolean clipboardAutosync;
     private final boolean powerOn;
     private final boolean keepActive;
+    private final boolean persistScreenOff;
 
     private final KeyCharacterMap charMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
 
@@ -116,6 +117,7 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
         this.camera = options.getVideoSource() == VideoSource.CAMERA;
         this.controlChannel = controlChannel;
         this.cleanUp = cleanUp;
+        this.persistScreenOff = options.getPersistScreenOff();
 
         if (this.camera) {
             // Unused for camera
@@ -387,6 +389,22 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
                 case ControlMessage.TYPE_SET_DISPLAY_POWER:
                     if (supportsInputEvents) {
                         setDisplayPower(msg.getOn());
+                    }
+                    return true;
+                case ControlMessage.TYPE_JH_KEEP_ACTIVE:
+                    int activeDisplay = getActionDisplayId();
+                    // Extends inactivity only for an already-awake device. Never
+                    // wake it, dismiss keyguard or change timeout/security settings.
+                    if (activeDisplay != Device.DISPLAY_ID_NONE && Device.isScreenOn(activeDisplay)) {
+                        Device.keepActive(activeDisplay);
+                    }
+                    return true;
+                case ControlMessage.TYPE_JH_RELEASE_DISPLAY:
+                    // The phone was woken outside the mirror: acknowledge intent
+                    // without changing display power or injecting a wake event.
+                    if (persistScreenOff) {
+                        keepDisplayPowerOff = false;
+                        if (cleanUp != null) cleanUp.setKeepScreenOffOnExit(false);
                     }
                     return true;
                 case ControlMessage.TYPE_ROTATE_DEVICE:
@@ -857,14 +875,17 @@ public class Controller implements AsyncProcessor, VirtualDisplayListener {
     private void setDisplayPower(boolean on) {
         // Change the power of the main display when mirroring a virtual display
         int targetDisplayId = displayId != Device.DISPLAY_ID_NONE ? displayId : 0;
+        if (persistScreenOff && on && !Device.isScreenOn(targetDisplayId)) {
+            Device.pressReleaseKeycode(KeyEvent.KEYCODE_WAKEUP, targetDisplayId, Device.INJECT_MODE_ASYNC);
+        }
         boolean setDisplayPowerOk = Device.setDisplayPower(targetDisplayId, on);
         if (setDisplayPowerOk) {
             // Do not keep display power off for virtual displays: MOD+p must wake up the physical device
             keepDisplayPowerOff = displayId != Device.DISPLAY_ID_NONE && !on;
             Ln.i("Device display turned " + (on ? "on" : "off"));
             if (cleanUp != null) {
-                boolean mustRestoreOnExit = !on;
-                cleanUp.setRestoreDisplayPower(mustRestoreOnExit);
+                if (persistScreenOff) cleanUp.setKeepScreenOffOnExit(!on);
+                else cleanUp.setRestoreDisplayPower(!on);
             }
         }
     }

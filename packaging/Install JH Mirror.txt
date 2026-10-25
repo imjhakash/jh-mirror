@@ -1,0 +1,77 @@
+JH Mirror — your Android phone on your Mac
+Developed by Johirul Hoq Akash
+
+ONE APP
+All core tools, the Android companion and an offline Quick Start guide are inside
+JH Mirror.app. No Homebrew, Python, Java, Android SDK or other JH Mirror downloads
+are needed. OBS and BlackHole are optional call add-ons only.
+
+INSTALL
+If upgrading, quit the existing JH Mirror when you have finished using the phone.
+1. Drag "JH Mirror" onto the Applications folder.
+2. Open JH Mirror from Applications.
+   The first time, macOS may say it cannot check the app (it is not from the App Store).
+   Go to System Settings → Privacy & Security, scroll down, and click "Open Anyway" next to JH Mirror.
+   First try opening the app, then use Open Anyway and confirm Open.
+3. Allow notifications and local network access when macOS asks.
+
+PAIR YOUR PHONE (once)
+For wireless pairing, Android 11+ and the same Wi-Fi are required.
+Android 8–10: enable USB debugging, connect USB, approve this Mac on the phone,
+and choose Use USB-connected phone in JH Mirror.
+1. On the phone: Settings → About phone → Software information → tap "Build number" 7 times
+   (this turns on Developer options).
+2. Settings → Developer options → Wireless debugging → turn it on.
+3. Tap "Pair device with QR code" and scan the code JH Mirror shows.
+
+That's it. JH Mirror installs its phone app, grants its permissions, and connects by itself:
+screen mirroring, notifications (click, reply, dismiss), files, clipboard and drag & drop.
+After a phone restart it reconnects on its own; the menu bar icon has a Reconnect button.
+
+PHONE SCREEN OFF
+On Android 14+, the Phone Tools screen button also blocks physical phone touch.
+Press the phone power button or stop mirroring to restore touch. A lost Mac connection
+releases the touch guard within eight seconds.
+
+PHONE TOOLS AND APPS
+Click the small white arrow at the mirror's top-right to expand/collapse tools.
+App Library opens a simple four-column app drawer beside the mirror. Click an icon
+to open its app; right-click for Uninstall with confirmation. Click App Library again
+or press Escape to close the drawer. System apps and the active launcher/keyboard
+are protected. The saved list updates once daily when used; click its small refresh
+icon for an immediate update. Reopening or restarting reuses today's saved list.
+Activity pulses prevent idle sleep during visible mirroring and while a dark mirror
+is hidden/minimized. A deliberately dark phone stays dark after closing the mirror.
+Turn it on with the phone power button or Turn Phone Screen On in the JH Mirror menu.
+Closing releases touch protection and allows Android to sleep. Unlock once if the phone
+was already locked; your phone timeout, PIN and biometric settings are unchanged.
+
+PHONE FILES AND MEDIA
+Open the folder or photo icon in Phone Tools. Browse shared storage, Downloads,
+Camera, Pictures, Videos, Music and Documents. Photos/videos have on-demand previews.
+Drag Mac files or folders into the browser to send to the current folder. In a media
+view, uploads go to Downloads. Select phone items and Save to Mac, or drag them into
+Finder. The transfer list shows progress and speed. Pause keeps partial copies;
+Resume continues from the saved byte position, including after an app restart.
+Completed copies are SHA-256 verified. Existing files are kept; colliding names get
+a number. Original files are not deleted. Android-protected app storage is excluded.
+A brief disconnect retries up to three times. Actual speed depends on the connection
+and storage. No extra file-access permission or network server is required.
+
+PHONE CAMERA AND MICROPHONE FOR CALLS
+Open Help → Setup & Add-ons for detected status, downloads and setup help.
+Install only the optional add-ons you need:
+- Camera: OBS Studio (Apple silicon) — https://obsproject.com/download
+  Setup: https://obsproject.com/kb/virtual-camera-troubleshooting
+- Microphone: BlackHole 2ch — https://existential.audio/blackhole/
+  Setup: https://github.com/ExistentialAudio/BlackHole#installation-instructions
+ Approve the OBS camera extension, stop Virtual Camera, then quit OBS.
+Direct mode needs no OBS window, scenes, server or password. BlackHole is a background
+driver; no audio app needs to stay open. Click Phone Camera in the menu bar to start a
+live preview. Choose Front/Rear, rotate 90 degrees or Mirror. Minimize to keep video
+running during a call; closing the window stops it. Phone Mic starts separately.
+In your calling app choose OBS Virtual Camera and BlackHole 2ch. Keep speakers as your
+usual Mac/headphone output. Camera needs Android 12+. Phone capture is always manual.
+
+Help → Quick Start opens the offline setup guide bundled inside the app.
+Requires Apple silicon and macOS 26 or later. The app states its minimum version.

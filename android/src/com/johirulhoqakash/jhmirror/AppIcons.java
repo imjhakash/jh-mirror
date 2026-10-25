@@ -1,4 +1,4 @@
-package local.androidwireless.bridge;
+package com.johirulhoqakash.jhmirror;
 
 import android.content.Context;
 import android.graphics.Bitmap;

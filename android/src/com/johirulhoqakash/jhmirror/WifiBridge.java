@@ -1,4 +1,4 @@
-package local.androidwireless.bridge;
+package com.johirulhoqakash.jhmirror;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -17,7 +17,7 @@ import javax.security.auth.x500.X500Principal;
  * only through its already authenticated ADB tunnel, then pins it for LAN use. */
 final class WifiBridge {
     static final int PORT = 38476;
-    private static final String ALIAS = "android-wireless-lan-v2";
+    private static final String ALIAS = "jh-mirror-lan";
     private static SSLServerSocket server;
     private static NsdManager manager;
     private static NsdManager.RegistrationListener registration;
@@ -34,7 +34,7 @@ final class WifiBridge {
                 generator.initialize(new KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN)
                     .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
                     .setDigests(KeyProperties.DIGEST_NONE, KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA384, KeyProperties.DIGEST_SHA512)
-                    .setCertificateSubject(new X500Principal("CN=Android Wireless"))
+                    .setCertificateSubject(new X500Principal("CN=JH Mirror"))
                     .setCertificateSerialNumber(BigInteger.ONE)
                     .setCertificateNotBefore(new Date(1577836800000L))
                     .setCertificateNotAfter(new Date(2208988800000L)).build());
@@ -64,7 +64,7 @@ final class WifiBridge {
                     try { BridgeState.accept(listener.accept(), true); }
                     catch (Exception error) {
                         if (listener.isClosed()) break;
-                        android.util.Log.w("AndroidWireless", "LAN accept", error);
+                        android.util.Log.w("JHMirror", "LAN accept", error);
                         // Avoid a hot loop on persistent errors such as descriptor exhaustion.
                         try { Thread.sleep(200); } catch (InterruptedException stop) { break; }
                     }
@@ -81,7 +81,7 @@ final class WifiBridge {
             if (registration != null) return;
             manager = (NsdManager)context.getSystemService(Context.NSD_SERVICE);
             NsdServiceInfo service = new NsdServiceInfo();
-            service.setServiceName(identity); service.setServiceType("_androidwireless._tcp."); service.setPort(PORT);
+            service.setServiceName(identity); service.setServiceType("_jhmirror._tcp."); service.setPort(PORT);
             registration = new NsdManager.RegistrationListener() {
                 public void onServiceRegistered(NsdServiceInfo info) { }
                 public void onRegistrationFailed(NsdServiceInfo info, int error) {
@@ -93,7 +93,7 @@ final class WifiBridge {
             };
             manager.registerService(service, NsdManager.PROTOCOL_DNS_SD, registration);
         } catch (Exception error) {
-            android.util.Log.e("AndroidWireless", "Could not start encrypted Wi-Fi bridge", error);
+            android.util.Log.e("JHMirror", "Could not start encrypted Wi-Fi bridge", error);
             if (server != null) try { server.close(); } catch (Exception ignored) { }
             server = null;
         }

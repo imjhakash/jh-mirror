@@ -1,0 +1,11 @@
+[
+ {"id":"01_hook","text":"You love your Mac. You love your Galaxy. So why do they still feel like strangers?"},
+ {"id":"02_intro","text":"Meet JH Mirror. A complete Mac and Galaxy ecosystem, built by Johirul Hoq Akash."},
+ {"id":"03_setup","text":"Setup takes about a minute. Open JH Mirror on your Mac. On your phone, turn on Developer options, switch on Wireless debugging, and scan the pairing code. That's it. JH Mirror installs its companion app and connects, all on its own."},
+ {"id":"04_mirror","text":"Now your phone lives right on your desktop. Open any app, scroll, and type with your Mac's keyboard. Wireless, and in real time."},
+ {"id":"05_notify","text":"Notifications arrive on your Mac the moment they reach your phone. Reply, dismiss, or click to open them instantly."},
+ {"id":"06_clip","text":"Copy anything on your phone, and simply press Command V on your Mac. It's already there."},
+ {"id":"07_files","text":"Browse your entire gallery and file manager. Preview photos, drag them into Finder, or drop files straight back to your phone."},
+ {"id":"08_camera","text":"And just like Continuity Camera on iPhone, your Galaxy becomes your Mac's webcam. Switch between front and rear with one click."},
+ {"id":"09_outro","text":"Mirroring, notifications, clipboard, files and camera. The ecosystem you thought only iPhone could give you, now on Galaxy. JH Mirror. Your Galaxy, at home on your Mac."}
+]

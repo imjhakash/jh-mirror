@@ -30,6 +30,8 @@ public final class ControlMessage {
     public static final int TYPE_CAMERA_ZOOM_OUT = 20;
     public static final int TYPE_RESIZE_DISPLAY = 21;
     public static final int TYPE_SCAN_FILE = 22;
+    public static final int TYPE_JH_KEEP_ACTIVE = 200;
+    public static final int TYPE_JH_RELEASE_DISPLAY = 201;
 
     public static final long SEQUENCE_INVALID = 0;
 

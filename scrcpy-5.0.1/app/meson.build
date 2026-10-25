@@ -152,8 +152,9 @@ dependencies = [
 
 if host_machine.system() == 'darwin'
     add_languages('objc', native: false)
-    src += [ 'src/macos_window.m' ]
-    dependencies += dependency('appleframeworks', modules: ['Cocoa'])
+    src += [ 'src/macos_window.m', 'src/aw_preview.c', 'src/aw_camera_sink.m' ]
+    add_project_arguments('-fobjc-arc', language: 'objc')
+    dependencies += dependency('appleframeworks', modules: ['Cocoa', 'QuartzCore', 'CoreMediaIO', 'CoreMedia', 'CoreVideo', 'CoreImage'])
 endif
 
 if v4l2_support

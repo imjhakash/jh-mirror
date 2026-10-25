@@ -3,31 +3,36 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>Android Wireless</string>
+	<string>JH Mirror</string>
 	<key>CFBundleExecutable</key>
-	<string>AndroidWireless</string>
+	<string>JHMirror</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon.icns</string>
 	<key>CFBundleIdentifier</key>
-	<string>local.jhakash.android-wireless</string>
+	<string>com.johirulhoqakash.jhmirror</string>
 	<key>CFBundleName</key>
-	<string>Android Wireless</string>
+	<string>JH Mirror</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.4.0</string>
+	<string>4.3.0</string>
 	<key>CFBundleVersion</key>
-	<string>14</string>
+	<string>21</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_androidwireless._tcp.</string>
+		<string>_jhmirror._tcp.</string>
 		<string>_adb-tls-connect._tcp.</string>
+		<string>_adb-tls-pairing._tcp.</string>
 	</array>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Johirul Hoq Akash. Developed by Johirul Hoq Akash.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Connect securely to your paired Android phone for notifications and file sharing.</string>
+	<string>JH Mirror finds and connects to your paired Android phone on the same Wi-Fi.</string>
 </dict>
 </plist>

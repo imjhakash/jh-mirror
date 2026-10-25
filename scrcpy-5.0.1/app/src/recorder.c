@@ -112,7 +112,9 @@ sc_recorder_write_stream(struct sc_recorder *recorder,
     } else {
         st->last_pts = packet->pts;
     }
-    return av_interleaved_write_frame(recorder->ctx, packet) >= 0;
+    bool ok = av_interleaved_write_frame(recorder->ctx, packet) >= 0;
+    if (getenv("AW_CALL_STREAM")) { avio_flush(recorder->ctx->pb); }
+    return ok;
 }
 
 static inline bool
@@ -256,7 +258,16 @@ sc_recorder_process_header(struct sc_recorder *recorder) {
         }
     }
 
-    bool ok = avformat_write_header(recorder->ctx, NULL) >= 0;
+    AVDictionary *mux_options = NULL;
+    if (getenv("AW_CALL_STREAM")) {
+        // Matroska over a private FIFO: bounded latency, no recording stored on disk.
+        av_dict_set(&mux_options, "live", "1", 0);
+        av_dict_set(&mux_options, "cluster_time_limit", "100", 0);
+        recorder->ctx->flags |= AVFMT_FLAG_FLUSH_PACKETS;
+    }
+    bool ok = avformat_write_header(recorder->ctx, &mux_options) >= 0;
+    av_dict_free(&mux_options);
+    if (getenv("AW_CALL_STREAM")) { avio_flush(recorder->ctx->pb); }
     if (!ok) {
         LOGE("Failed to write header to %s", recorder->filename);
         goto end;

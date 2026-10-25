@@ -1,4 +1,4 @@
-package local.androidwireless.bridge;
+package com.johirulhoqakash.jhmirror;
 
 import android.app.Activity;
 import android.content.ClipData;
@@ -11,19 +11,19 @@ import android.view.WindowManager;
 import android.widget.*;
 import java.util.ArrayList;
 
-/** Share → Android Wireless queues files. Share → Copy to Mac also places them on the Mac clipboard. */
+/** Share → JH Mirror queues files. Share → Copy to Mac also places them on the Mac clipboard. */
 public final class ShareActivity extends Activity {
-    static final String COPY_TO_MAC = "local.androidwireless.bridge.CopyToMac";
+    static final String COPY_TO_MAC = "com.johirulhoqakash.jhmirror.CopyToMac";
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         Intent intent = getIntent();
         boolean clipboard = intent.getComponent() != null && COPY_TO_MAC.equals(intent.getComponent().getClassName());
-        LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int)(24 * getResources().getDisplayMetrics().density); layout.setPadding(pad, pad * 2, pad, pad);
-        TextView title = new TextView(this); title.setText(clipboard ? "Copy to Mac" : "Send to your Mac"); title.setTextSize(26); layout.addView(title);
-        TextView status = new TextView(this); status.setTextSize(16); layout.addView(status);
-        Button done = new Button(this); done.setText("Done"); done.setEnabled(false); done.setOnClickListener(v -> finish()); layout.addView(done);
+        PhoneUi ui = new PhoneUi(this);
+        LinearLayout layout = ui.column(); layout.setPadding(ui.dp(22), ui.dp(20), ui.dp(22), ui.dp(18)); layout.setBackground(ui.rounded(ui.surface, 20));
+        layout.addView(ui.text(clipboard ? "Copy to Mac" : "Send to your Mac", 22, true));
+        TextView status = ui.note(""); layout.addView(status);
+        Button done = ui.button("Done", this::finish); done.setEnabled(false); layout.addView(done);
         setContentView(layout); getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         ArrayList<Uri> files = new ArrayList<>();
         CharSequence text = null;
@@ -39,7 +39,7 @@ public final class ShareActivity extends Activity {
                     : legacyStream(intent);
                 if (value instanceof Uri) files.add((Uri)value);
                 else text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
-            } else if ("local.androidwireless.bridge.PICKED".equals(intent.getAction())) {
+            } else if ("com.johirulhoqakash.jhmirror.PICKED".equals(intent.getAction())) {
                 if (intent.getClipData() != null) for (int i = 0; i < intent.getClipData().getItemCount(); i++) files.add(intent.getClipData().getItemAt(i).getUri());
                 else if (intent.getData() != null) files.add(intent.getData());
             }
@@ -62,7 +62,7 @@ public final class ShareActivity extends Activity {
         // The Mac clipboard holds one item; several files are still delivered and the last one is copied.
         if (files.isEmpty() || files.size() > FileOutbox.MAX_QUEUE) {
             status.setText(clipboard ? "Choose a photo, file or text, then Share → Copy to Mac."
-                : "Choose 1–100 files or photos, then Share → Android Wireless.");
+                : "Choose 1–100 files or photos, then Share → JH Mirror.");
             done.setEnabled(true); return;
         }
         BridgeState.start(this);
@@ -79,11 +79,11 @@ public final class ShareActivity extends Activity {
                 } catch (Exception e) { failed++; error = e.getMessage(); }
             }
             String message = (clipboard && failed == 0
-                    ? (queued == 1 ? "Copied to your Mac clipboard. Press ⌘V on the Mac to paste."
-                        : queued + " files sent; the last one is on your Mac clipboard. Press ⌘V to paste.")
+                    ? queued + " file(s) queued. The last item goes to the Mac clipboard after transfer."
                     : queued + " file(s) queued for your Mac." + (failed == 0 ? "" : "\n" + failed + " failed: " + error))
-                + "\n\nReceived files also appear in Downloads / Android Wireless on the Mac. Original files remain on your phone.";
-            runOnUiThread(() -> { status.setText(message); done.setEnabled(true); getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); });
+                + "\n\nReceived files also appear in Downloads / JH Mirror on the Mac. Original files remain on your phone.";
+            final boolean success = failed == 0;
+            runOnUiThread(() -> { status.setText(message); done.setEnabled(true); getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); if (success) finishQuietly(); });
         }, "prepare-shared-files").start();
     }
 
@@ -96,8 +96,15 @@ public final class ShareActivity extends Activity {
         final String failure = message;
         runOnUiThread(() -> {
             if (failure != null) status.setText(failure);
+            else { status.setText("Text queued for your Mac clipboard. Paste after it arrives on the Mac."); finishQuietly(); }
             done.setEnabled(true); getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         });
+    }
+
+    private void finishQuietly() {
+        if (!getSharedPreferences("bridge", 0).getBoolean("quietShares", true)) return;
+        Toast.makeText(this, "Queued for your Mac · originals kept", Toast.LENGTH_SHORT).show();
+        finish();
     }
 
     @SuppressWarnings("deprecation")

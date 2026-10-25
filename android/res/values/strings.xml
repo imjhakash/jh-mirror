@@ -1,0 +1,3 @@
+<resources>
+    <string name="touch_guard_description">Blocks phone touches only while JH Mirror turns the phone display off. Touch returns when you press the power button, stop mirroring, or the Mac stops renewing an eight-second safety lease. Does not read screen content.</string>
+</resources>

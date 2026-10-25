@@ -14,6 +14,9 @@ import android.system.Os;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Handle the cleanup of scrcpy, even if the main process is killed.
@@ -25,7 +28,7 @@ public final class CleanUp {
     // Dynamic options
     private static final int PENDING_CHANGE_DISPLAY_POWER = 1 << 0;
     private int pendingChanges;
-    private boolean pendingRestoreDisplayPower;
+    private int pendingDisplayExitState; // 0 unchanged, 1 restore, 2 remain black and sleep
 
     private Thread thread;
     private boolean interrupted;
@@ -143,7 +146,7 @@ public final class CleanUp {
 
         while (true) {
             int localPendingChanges;
-            boolean localPendingRestoreDisplayPower;
+            int localPendingDisplayExitState;
             synchronized (this) {
                 while (!interrupted && pendingChanges == 0) {
                     try {
@@ -152,22 +155,27 @@ public final class CleanUp {
                         throw new AssertionError("Clean up thread MUST NOT be interrupted");
                     }
                 }
-                if (interrupted) {
+                if (interrupted && pendingChanges == 0) {
                     break;
                 }
                 localPendingChanges = pendingChanges;
-                localPendingRestoreDisplayPower = pendingRestoreDisplayPower;
+                localPendingDisplayExitState = pendingDisplayExitState;
                 pendingChanges = 0;
             }
             if ((localPendingChanges & PENDING_CHANGE_DISPLAY_POWER) != 0) {
-                out.write(localPendingRestoreDisplayPower ? 1 : 0);
+                out.write(localPendingDisplayExitState);
                 out.flush();
             }
         }
     }
 
     public synchronized void setRestoreDisplayPower(boolean restoreDisplayPower) {
-        pendingRestoreDisplayPower = restoreDisplayPower;
+        pendingDisplayExitState = restoreDisplayPower ? 1 : 0;
+        pendingChanges |= PENDING_CHANGE_DISPLAY_POWER;
+        notify();
+    }
+    public synchronized void setKeepScreenOffOnExit(boolean off) {
+        pendingDisplayExitState = off ? 2 : 0;
         pendingChanges |= PENDING_CHANGE_DISPLAY_POWER;
         notify();
     }
@@ -207,14 +215,16 @@ public final class CleanUp {
 
         // Dynamic option
         boolean restoreDisplayPower = false;
+        boolean keepScreenOff = false;
 
         try {
             // Wait for the server to die
             int msg;
             while ((msg = System.in.read()) != -1) {
                 // Only restore display power
-                assert msg == 0 || msg == 1;
-                restoreDisplayPower = msg != 0;
+                assert msg >= 0 && msg <= 2;
+                restoreDisplayPower = msg == 1;
+                keepScreenOff = msg == 2;
             }
         } catch (IOException e) {
             // Expected when the server is dead
@@ -257,7 +267,7 @@ public final class CleanUp {
         // Change the power of the main display when mirroring a virtual display
         int targetDisplayId = displayId != Device.DISPLAY_ID_NONE ? displayId : 0;
         if (Device.isScreenOn(targetDisplayId)) {
-            if (powerOffScreen) {
+            if (powerOffScreen || (keepScreenOff && blackStillRequested())) {
                 Ln.i("Power off screen");
                 Device.powerOffScreen(targetDisplayId);
             } else if (restoreDisplayPower) {
@@ -267,5 +277,20 @@ public final class CleanUp {
         }
 
         System.exit(0);
+    }
+
+    private static boolean blackStillRequested() {
+        // A phone power-button wake or an explicit Mac Screen On action wins
+        // even when it races the old mirror's cleanup process.
+        try {
+            Process check = new ProcessBuilder("am", "broadcast", "--user", "current", "-n",
+                "com.johirulhoqakash.jhmirror/.SetupReceiver", "-a", "com.johirulhoqakash.jhmirror.TOUCH_GUARD",
+                "--es", "operation", "state").redirectErrorStream(true).start();
+            if (!check.waitFor(1500, TimeUnit.MILLISECONDS)) { check.destroy(); return true; }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            byte[] buffer = new byte[256]; int count;
+            while ((count = check.getInputStream().read(buffer)) != -1 && bytes.size() < 4096) bytes.write(buffer, 0, count);
+            return !new String(bytes.toByteArray(), StandardCharsets.UTF_8).contains("data=\"screen-on\"");
+        } catch (Exception unavailable) { return true; }
     }
 }

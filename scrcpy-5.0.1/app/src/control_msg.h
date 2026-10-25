@@ -50,6 +50,9 @@ enum sc_control_msg_type {
     SC_CONTROL_MSG_TYPE_CAMERA_ZOOM_OUT,
     SC_CONTROL_MSG_TYPE_RESIZE_DISPLAY,
     SC_CONTROL_MSG_TYPE_SCAN_FILE,
+    // JH Mirror: a single activity pulse, never a key event or unlock request.
+    SC_CONTROL_MSG_TYPE_JH_KEEP_ACTIVE = 200,
+    SC_CONTROL_MSG_TYPE_JH_RELEASE_DISPLAY = 201,
 };
 
 enum sc_copy_key {

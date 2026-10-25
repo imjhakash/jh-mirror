@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JH Mirror · Quick Start</title>
+<style>
+:root { color-scheme:light dark; font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f5f6f8; color:#17202b }
+body { max-width:760px; margin:64px auto; padding:0 24px; line-height:1.65 }
+h1 { font-size:40px; letter-spacing:-1.6px; margin:0 } h2 { font-size:22px; margin:0 0 12px }
+p { margin:10px 0 } .sub,small { color:#67717e } .card { background:white; border:1px solid #e1e5e9; border-radius:18px; padding:26px; margin:24px 0 }
+a { color:#126bca; text-underline-offset:3px } .links { display:flex; flex-wrap:wrap; gap:12px 24px; margin-top:18px }
+ol { padding-left:22px } li { margin:9px 0 } .tag { font-size:12px; color:#34845c; font-weight:600; letter-spacing:1px; text-transform:uppercase }
+@media(prefers-color-scheme:dark) { :root { background:#17191d; color:#eef0f5 } .card { background:#22252b; border-color:#343940 } .sub,small { color:#adb5c0 } a { color:#82baff } .tag { color:#79c999 } }
+</style>
+<body>
+<div class="tag">JH Mirror · Quick Start</div>
+<h1>Your phone. One Mac app.</h1>
+<p class="sub">Mirroring, files, media, apps, notifications and clipboard are included.<br>The Android companion and runtime tools are built into JH Mirror.</p>
+<section class="card">
+<h2>1. Install JH Mirror</h2>
+<p>Open the JH Mirror disk image. Drag <strong>JH Mirror</strong> to <strong>Applications</strong>, then open it from Applications. You can eject the disk image afterward.</p>
+<p>This build supports <strong>Apple silicon and macOS 26 or later</strong>. It is locally signed rather than notarized. If macOS blocks the first launch, first attempt to open JH Mirror, then use <strong>System Settings → Privacy &amp; Security → Open Anyway</strong> for JH Mirror and confirm Open. Allow local network access and notifications when asked.</p>
+<p>You do not need Homebrew, Python, Java, the Android SDK or separate JH Mirror downloads to use the app.</p>
+</section>
+<section class="card">
+<h2>2. Pair your Android phone</h2>
+<ol>
+<li>On the phone, enable Developer options: open About phone → Software information and tap <strong>Build number</strong> seven times.</li>
+<li>For Android 11 or later, connect both devices to the same Wi-Fi. Open Developer options → <strong>Wireless debugging</strong> and turn it on.</li>
+<li>Choose <strong>Pair Phone</strong> in JH Mirror. On the phone choose <strong>Pair device with QR code</strong> and scan the Mac's code. Code pairing is also available.</li>
+</ol>
+<p>For Android 8–10, use a USB cable, enable <strong>USB debugging</strong>, approve this Mac on the phone and choose <strong>Use USB-connected phone</strong>.</p>
+<p>JH Mirror installs its bundled phone companion during pairing. Unlock the phone normally if asked. Use <strong>Device Check</strong> to see which features your phone supports and how to fix a failed check.</p>
+</section>
+<section class="card">
+<h2>3. Open your tools</h2>
+<p>Click the small white arrow at the mirror's top-right to open Phone Tools. Files, Media Library and the App Library are beside your mirror. Drop Mac files into Phone Files to send them; drag phone files into Finder to save them.</p>
+<p>The menu bar opens your phone screen, camera and microphone. The dashboard opens only when you choose <strong>Dashboard</strong>. Use <strong>Help → Setup &amp; Add-ons</strong> for setup status and links.</p>
+</section>
+<section class="card" id="camera">
+<div class="tag">Optional · phone camera in Mac calls</div>
+<h2>OBS Studio camera component</h2>
+<ol>
+<li>Download <strong>OBS Studio for macOS, Apple silicon</strong> from its official site. Move OBS to Applications.</li>
+<li>Open OBS, choose <strong>Start Virtual Camera</strong> and approve the camera extension when macOS asks. Follow the prompt to System Settings; the location varies with macOS. The official setup help below explains the approval.</li>
+<li>Stop Virtual Camera and <strong>quit OBS</strong>. Keep OBS installed.</li>
+<li>In JH Mirror → Setup &amp; Add-ons, choose <strong>Refresh Status</strong>. Open <strong>Phone Camera</strong>, choose Front or Rear, rotate if needed, then select <strong>OBS Virtual Camera</strong> in your calling app.</li>
+</ol>
+<p>JH Mirror sends video directly to the installed camera component. During normal calls OBS stays closed. Phone camera capture requires Android 12 or later and starts only when you choose it. Closing the camera window stops capture; minimizing keeps it running.</p>
+<div class="links"><a href="https://obsproject.com/download">Download OBS Studio ↗</a><a href="https://obsproject.com/kb/virtual-camera-troubleshooting">Official camera setup help ↗</a></div>
+</section>
+<section class="card" id="microphone">
+<div class="tag">Optional · phone microphone in Mac calls</div>
+<h2>BlackHole 2ch audio driver</h2>
+<ol>
+<li>Use the official BlackHole download page or installation guide below. Choose <strong>BlackHole 2ch</strong>.</li>
+<li>Run its installer and complete the macOS administrator approval. Restart the Mac if the installer requests it or the device does not appear.</li>
+<li>In JH Mirror → Setup &amp; Add-ons, choose <strong>Refresh Status</strong>. Turn on <strong>Phone Mic</strong> in JH Mirror, then select <strong>BlackHole 2ch</strong> as the microphone in your calling app.</li>
+</ol>
+<p>Keep your usual Mac speakers or headphones as the call output. BlackHole runs as an audio driver, so no extra audio window needs to stay open. Phone microphone capture requires Android 11 or later.</p>
+<div class="links"><a href="https://existential.audio/blackhole/">BlackHole official download page ↗</a><a href="https://github.com/ExistentialAudio/BlackHole#installation-instructions">Official installation guide ↗</a></div>
+</section>
+<p class="sub">OBS and BlackHole are independent, optional projects. Install either only for the call input you need. All other JH Mirror tools work without them, subject to the phone's capabilities.</p>
+<small>Developed by Johirul Hoq Akash · Setup instructions are available offline; download and help links require internet access.</small>
+</body></html>

@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+  <meta charset="utf-8">
+  <script>document.documentElement.classList.remove('no-js')</script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Connect your Android phone to your Mac, free | JH Mirror</title>
+  <meta name="description" content="Free, open-source Mac app for Android phones: see the phone's screen, reply to notifications, copy and paste between them, move photos and files over Wi-Fi, and use the phone as a webcam.">
+  <meta name="theme-color" content="#0a1020">
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" type="image/png" href="assets/img/favicon.png">
+  <link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="JH Mirror">
+  <meta property="og:title" content="JH Mirror: use your Android phone on your Mac, free">
+  <meta property="og:description" content="Screen, notifications, clipboard, files and camera between Android and macOS. Free, open source, no account.">
+  <meta property="og:image" content="assets/img/og-image.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "JH Mirror",
+    "operatingSystem": "macOS 26 or later on Apple silicon; Android 11 or later",
+    "applicationCategory": "UtilitiesApplication",
+    "isAccessibleForFree": true,
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "description": "A free, open-source Mac app that connects an Android phone to a Mac over Wi-Fi: screen mirroring with sound, phone notifications with reply, clipboard sync, wireless file and photo transfer, and the phone camera as a webcam.",
+    "featureList": [
+      "Android screen mirroring on Mac with keyboard, mouse and sound",
+      "Android notifications on Mac with reply",
+      "Clipboard sync from Android to Mac, text and images",
+      "Wireless Android file transfer for Mac",
+      "Photo, video and audio library browser",
+      "Android phone as a Mac webcam and microphone"
+    ],
+    "author": { "@type": "Person", "name": "Johirul Hoq Akash" }
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      { "@type": "Question", "name": "How do I connect my Android phone to my Mac?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Install JH Mirror on the Mac. On the phone, turn on Developer options and Wireless debugging, tap Pair device with QR code and scan the code JH Mirror shows. Keep both on the same Wi-Fi. JH Mirror installs its small phone app and connects by itself." } },
+      { "@type": "Question", "name": "Is JH Mirror free?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Yes. Every feature is free, with no trial, no paid tier, no ads and no account." } },
+      { "@type": "Question", "name": "Is JH Mirror open source?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Yes. The Mac app and the phone app are open source, so anyone can read the code, check what it does and build it themselves. Screen mirroring is built on scrcpy, which is open source under the Apache 2.0 license." } },
+      { "@type": "Question", "name": "Can I AirDrop from Android to Mac?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Most Android phones can't use AirDrop. JH Mirror does the same everyday job: drag photos and files from the phone into Finder, or drop Mac files onto the phone, over your Wi-Fi." } },
+      { "@type": "Question", "name": "Is this an Android File Transfer alternative for Mac?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Yes. It opens the phone's storage in a Mac window where you can browse folders, search, create folders and copy files both ways, without a USB cable. Every transfer is checked with SHA-256 and large files resume after a restart." } },
+      { "@type": "Question", "name": "Can I copy and paste between Android and Mac?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Yes. Text or an image you copy on the phone is ready to paste on the Mac with Command-V. Copies the phone marks as sensitive, such as passwords, are skipped. In the phone window, Command-V pastes Mac text into the phone." } },
+      { "@type": "Question", "name": "Can I use my Android phone as a webcam on my Mac?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Yes, on Android 12 and newer. Start Phone Camera from the menu bar, pick the front or rear camera, then choose the OBS Virtual Camera in your video app. The phone microphone works too with the free BlackHole audio driver. Video is never recorded." } },
+      { "@type": "Question", "name": "Does it work with Samsung Galaxy and Pixel phones?",
+        "acceptedAnswer": { "@type": "Answer", "text": "It works with any phone running Android 11 or newer over Wi-Fi, and Android 8 to 10 over a USB cable. It is developed and tested daily on a Samsung Galaxy S23 Ultra." } }
+    ]
+  }
+  </script>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m0 0-5-5m5 5-5 5"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></symbol>
+      <symbol id="i-bubble" viewBox="0 0 24 24"><path d="M12 4c4.7 0 8.5 3.1 8.5 7s-3.8 7-8.5 7c-1 0-2-.1-2.9-.4L5 19.5l1.2-3.4C4.6 14.8 3.5 13 3.5 11c0-3.9 3.8-7 8.5-7z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-clip" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="M9 11h6M9 15h4"/></symbol>
+      <symbol id="i-photo" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="m4 18 5-5 4 4 3-3 4 4"/></symbol>
+      <symbol id="i-yes" viewBox="0 0 24 24"><path d="m6 12.5 4 4 8-9"/></symbol>
+      <symbol id="i-no" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+      <symbol id="i-code" viewBox="0 0 24 24"><path d="m8.5 7-5 5 5 5M15.5 7l5 5-5 5M13.5 4.5l-3 15"/></symbol>
+    </defs>
+  </svg>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" id="top">
+    <div class="wrap nav__in">
+      <a class="brand" href="#top" aria-label="JH Mirror home">
+        <img src="assets/img/logo-256.png" alt="" width="30" height="30">
+        <span>JH Mirror</span>
+      </a>
+      <nav class="nav__links" id="navLinks" aria-label="Main">
+        <a href="#features">Features</a>
+        <a href="#compare">Compare</a>
+        <a href="#setup">Setup</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <a class="btn btn--blue btn--sm nav__cta" data-download href="#download">Download</a>
+      <button class="nav__toggle" id="navToggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="navLinks">
+        <svg class="ic"><use href="#i-menu"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- hero -->
+    <section class="hero">
+      <div class="wrap hero__grid">
+        <div class="hero__copy">
+          <p class="hero__free"><svg class="ic"><use href="#i-yes"/></svg>Free and open source</p>
+          <h1>Use your Android phone <span>on your Mac.</span></h1>
+          <p class="hero__lede">JH Mirror connects your Android phone to your Mac over Wi‑Fi. See its screen, answer its messages, copy and paste between them, and move photos and files. The things iPhone owners already get.</p>
+          <div class="hero__actions">
+            <a class="btn btn--blue btn--lg" data-download href="#download"><svg class="ic"><use href="#i-download"/></svg>Download for Mac</a>
+            <a class="btn btn--line btn--lg" href="#film" data-play><svg class="ic ic--fill"><use href="#i-play"/></svg>Watch it work <span class="dim">1:49</span></a>
+          </div>
+          <ul class="hero__req" aria-label="Requirements">
+            <li>Mac with Apple silicon, macOS 26</li>
+            <li>Android 11 or newer</li>
+            <li>No account</li>
+          </ul>
+        </div>
+
+        <div class="stage" role="img" aria-label="A Mac desktop where an Android phone's text message, a copied tracking number and four saved photos arrive as Mac notifications">
+          <div class="stage__bar" aria-hidden="true">
+            <span class="stage__menu"><b>Finder</b><span>File</span><span>Edit</span><span>View</span></span>
+            <span class="stage__status"><img src="assets/img/favicon.png" alt="" width="14" height="14"><svg class="ic"><use href="#i-wifi"/></svg>Fri 9:41</span>
+          </div>
+          <img class="stage__phone" src="assets/img/mirror.webp" width="640" height="1191" alt="" aria-hidden="true">
+          <div class="stage__stack" aria-hidden="true">
+            <div class="note note--a">
+              <span class="note__icon note__icon--msg"><svg class="ic ic--fill"><use href="#i-bubble"/></svg></span>
+              <div class="note__body">
+                <p class="note__app">Messages · Galaxy S23 <time>now</time></p>
+                <p class="note__title">Maya</p>
+                <p class="note__text">Still on for 7 tonight?</p>
+                <p class="note__reply"><span>Leaving now, see you there</span><b>Send</b></p>
+              </div>
+            </div>
+            <div class="note note--b">
+              <span class="note__icon note__icon--clip"><svg class="ic"><use href="#i-clip"/></svg></span>
+              <div class="note__body">
+                <p class="note__app">Clipboard <time>now</time></p>
+                <p class="note__title">Copied on your phone</p>
+                <p class="note__text">Tracking number · <kbd>⌘V</kbd> to paste</p>
+              </div>
+            </div>
+            <div class="note note--c">
+              <span class="note__icon note__icon--photo"><svg class="ic"><use href="#i-photo"/></svg></span>
+              <div class="note__body">
+                <p class="note__app">Phone Files <time>now</time></p>
+                <p class="note__title">4 photos saved to Downloads</p>
+                <p class="note__bar"><i></i></p>
+                <p class="note__text">Verified · 18.2 MB</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- continuity map -->
+    <section class="map" id="features">
+      <div class="wrap">
+        <header class="head">
+          <h2>What an iPhone does with a Mac, now on Android</h2>
+          <p>Apple builds these into every iPhone. JH Mirror gives your Android phone the same everyday features.</p>
+        </header>
+        <table class="map__table">
+          <caption class="sr">iPhone features on a Mac and their JH Mirror equivalents for Android</caption>
+          <thead>
+            <tr><th scope="col">On an iPhone</th><th scope="col">With JH Mirror on Android</th><th scope="col"><span class="sr">Details</span></th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Universal Clipboard</th><td>Copy on the phone, press <kbd>⌘V</kbd> on the Mac</td><td><a href="#clipboard">Clipboard<svg class="ic"><use href="#i-arrow"/></svg></a></td></tr>
+            <tr><th scope="row">iPhone notifications on Mac</th><td>Phone alerts as Mac notifications, with Reply</td><td><a href="#notifications">Notifications<svg class="ic"><use href="#i-arrow"/></svg></a></td></tr>
+            <tr><th scope="row">AirDrop</th><td>Drag files between the phone and Finder over Wi‑Fi</td><td><a href="#files">Files<svg class="ic"><use href="#i-arrow"/></svg></a></td></tr>
+            <tr><th scope="row">Photos on Mac</th><td>Your camera roll, videos and music in a Mac window</td><td><a href="#media">Media<svg class="ic"><use href="#i-arrow"/></svg></a></td></tr>
+            <tr><th scope="row">iPhone Mirroring</th><td>The phone in a window, with keyboard, mouse and sound</td><td><a href="#mirroring">Mirroring<svg class="ic"><use href="#i-arrow"/></svg></a></td></tr>
+            <tr><th scope="row">Continuity Camera</th><td>The phone's camera and mic as your Mac webcam</td><td><a href="#camera">Camera<svg class="ic"><use href="#i-arrow"/></svg></a></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- film -->
+    <section class="film" id="film" aria-label="Product film">
+      <div class="wrap">
+        <div class="film__head">
+          <h2>See it work in under two minutes</h2>
+          <p>Pairing, a reply from a notification, a photo dragged into Finder. Real app, nothing staged.</p>
+        </div>
+        <figure class="film__frame" id="filmFrame">
+          <video id="filmVideo" playsinline preload="none" poster="assets/img/video-poster.jpg"
+                 data-src-hd="assets/video/jh-mirror-promo.mp4" data-src-sd="assets/video/jh-mirror-promo-720.mp4"></video>
+          <button class="film__play" type="button" data-play aria-label="Play the JH Mirror film, 1 minute 49 seconds">
+            <span class="film__btn"><svg class="ic ic--fill"><use href="#i-play"/></svg></span>
+          </button>
+        </figure>
+      </div>
+    </section>
+
+    <!-- clipboard -->
+    <section class="feat" id="clipboard">
+      <div class="wrap feat__grid">
+        <div class="feat__copy">
+          <p class="kin">Like Universal Clipboard</p>
+          <h2>Copy on your phone. Paste on your Mac.</h2>
+          <p>Copy a link, an address or a photo on your phone, then press <kbd>⌘V</kbd> in any Mac app. It's already there. Going the other way, <kbd>⌘V</kbd> in the phone window pastes your Mac's text into the phone.</p>
+          <ul class="facts">
+            <li>Text and images copy across automatically</li>
+            <li>Anything the phone marks sensitive, like passwords, is skipped</li>
+            <li>Clipboard history sits in the menu bar</li>
+            <li>A Copy to Mac tile in Quick Settings for one‑off sends</li>
+          </ul>
+        </div>
+        <figure class="feat__media">
+          <img class="shot" src="assets/img/clipboard.webp" width="1400" height="1027" loading="lazy" alt="Text typed on an Android phone appears pasted into a TextEdit document on the Mac">
+        </figure>
+      </div>
+    </section>
+
+    <!-- notifications -->
+    <section class="feat feat--flip" id="notifications">
+      <div class="wrap feat__grid">
+        <div class="feat__copy">
+          <p class="kin">Like iPhone notifications on Mac</p>
+          <h2>Answer your phone's messages from your Mac</h2>
+          <p>Texts, chats and every other app's alerts show up as normal Mac notifications, with the phone's own buttons. Type a reply in the banner and your phone sends it. Dismiss it on the Mac and it's gone from the phone too.</p>
+          <ul class="facts">
+            <li>Reply, Mark as read and Dismiss right in the banner</li>
+            <li>Click a notification to open that app in the phone window</li>
+            <li>Follows macOS Focus and hides sensitive content</li>
+          </ul>
+        </div>
+        <figure class="feat__media notes-pair">
+          <img class="shot" src="assets/img/notify-reply.webp" width="740" height="640" loading="lazy" alt="A phone notification on the Mac with the reply 'On my way, see you soon!' typed in">
+          <img class="shot notes-pair__done" src="assets/img/notify-done.webp" width="740" height="280" loading="lazy" alt="The Mac confirms the phone sent the reply">
+        </figure>
+      </div>
+    </section>
+
+    <!-- files -->
+    <section class="feat feat--wide" id="files">
+      <div class="wrap">
+        <div class="feat__split">
+          <div>
+            <p class="kin">Like AirDrop, for Android</p>
+            <h2>Move files between Android and Mac without a cable</h2>
+          </div>
+          <div>
+            <p>Open your phone's storage in a Mac window. Browse Downloads, DCIM, Documents and every shared folder, search by name, make new folders, then drag files into Finder or drop Mac files onto the phone.</p>
+            <ul class="facts facts--cols">
+              <li>Every file is checked with SHA‑256</li>
+              <li>Big transfers pause and resume, even after a restart</li>
+              <li>Never overwrites a file that's already there</li>
+              <li>No size limit and no cloud upload</li>
+            </ul>
+          </div>
+        </div>
+        <figure class="feat__media feat__media--wide">
+          <img class="shot" src="assets/img/drag.webp" width="1400" height="806" loading="lazy" alt="A photo from the phone being dragged into a Finder window on the Mac">
+        </figure>
+      </div>
+    </section>
+
+    <!-- media -->
+    <section class="feat" id="media">
+      <div class="wrap feat__grid">
+        <div class="feat__copy">
+          <p class="kin">Like Photos on Mac</p>
+          <h2>All your photos, videos and music on a bigger screen</h2>
+          <p>Photos, Videos and Audio each get their own tab, with thumbnails that load as you scroll. Press Space to preview, swipe to the next one, <kbd>⌘C</kbd> to copy a photo, or save the full‑quality original to your Mac.</p>
+          <ul class="facts">
+            <li>Originals arrive untouched, never recompressed</li>
+            <li>Videos play and songs preview without leaving the window</li>
+            <li>Free up space: delete phone photos after a confirm step</li>
+          </ul>
+        </div>
+        <figure class="feat__media">
+          <div class="tabs" data-tabs>
+            <div class="tabs__bar" role="tablist" aria-label="Media screenshots">
+              <button type="button" role="tab" id="tab-0" aria-controls="pane-0" aria-selected="true" data-tab="0">Gallery</button>
+              <button type="button" role="tab" id="tab-1" aria-controls="pane-1" aria-selected="false" tabindex="-1" data-tab="1">Preview</button>
+            </div>
+            <div class="tabs__panes shot">
+              <img id="pane-0" role="tabpanel" aria-labelledby="tab-0" data-pane="0" class="is-on" src="assets/img/gallery.webp" width="1400" height="888" loading="lazy" alt="The phone's photo gallery in a JH Mirror window on the Mac">
+              <img id="pane-1" role="tabpanel" aria-labelledby="tab-1" data-pane="1" src="assets/img/viewer.webp" width="1300" height="1020" loading="lazy" alt="A phone photo opened full size on the Mac">
+            </div>
+          </div>
+        </figure>
+      </div>
+    </section>
+
+    <!-- mirroring -->
+    <section class="feat feat--flip feat--tint" id="mirroring">
+      <div class="wrap feat__grid">
+        <div class="feat__copy">
+          <p class="kin">Like iPhone Mirroring</p>
+          <h2>Your phone in a Mac window, with sound</h2>
+          <p>Reply in any app, check a delivery or finish a level using your Mac's keyboard and trackpad, while the phone stays in your bag. Its sound plays through the Mac's speakers.</p>
+          <ul class="facts">
+            <li>Streams over Wi‑Fi in real time</li>
+            <li>A side strip for clipboard, files, media and apps</li>
+            <li><kbd>⌘1</kbd> phone, <kbd>⌘2</kbd> media, <kbd>⌘3</kbd> files</li>
+          </ul>
+          <div class="aside">
+            <h3>Pocket mode</h3>
+            <p>Turn the phone's screen off and lock its touchscreen while you keep using it from the Mac. No accidental taps in your pocket, and your PIN and lock settings stay as they are. Android 14 and newer.</p>
+          </div>
+        </div>
+        <figure class="feat__media">
+          <img class="shot shot--phone" src="assets/img/mirror.webp" width="640" height="1191" loading="lazy" alt="The Android phone screen in a Mac window, with a search typed from the Mac keyboard">
+        </figure>
+      </div>
+    </section>
+
+    <!-- camera -->
+    <section class="feat" id="camera">
+      <div class="wrap feat__grid">
+        <div class="feat__copy">
+          <p class="kin">Like Continuity Camera</p>
+          <h2>Use your Android phone as a Mac webcam</h2>
+          <p>Your phone's camera is better than the one above your screen. Start it from the menu bar, then pick it in your video call app like any other camera. Add the phone's microphone too.</p>
+          <ul class="facts">
+            <li>Front or rear camera, switched with one click</li>
+            <li>Rotate and mirror live, mid‑call</li>
+            <li>Nothing is recorded; the preview is deleted when you stop</li>
+            <li>Android 12+, with the free OBS camera and BlackHole add‑ons</li>
+          </ul>
+        </div>
+        <figure class="feat__media cam-pair">
+          <img class="shot cam-pair__back" src="assets/img/camera.webp" width="1200" height="998" loading="lazy" alt="The JH Mirror Phone Camera window with the rear camera live">
+          <img class="shot cam-pair__front" src="assets/img/webcam.webp" width="1400" height="788" loading="lazy" alt="A Mac video app using the Android phone as its camera">
+        </figure>
+      </div>
+    </section>
+
+    <!-- extras -->
+    <section class="extras">
+      <div class="wrap extras__grid">
+        <figure class="extras__media">
+          <img class="shot" src="assets/img/popover.webp" width="600" height="1330" loading="lazy" alt="The JH Mirror menu bar panel with a live phone preview and buttons for files, media, apps, clipboard and camera">
+        </figure>
+        <div>
+          <h2>Lives in the menu bar, out of your way</h2>
+          <dl class="extras__list">
+            <div><dt>Live preview</dt><dd>See the phone's screen from the menu bar, and pin it while you work.</dd></div>
+            <div><dt>App Library</dt><dd>Every app on the phone. Open one with a click, or uninstall it from the Mac.</dd></div>
+            <div><dt>Reconnects itself</dt><dd>New Wi‑Fi or a phone restart? It's back in about 20 seconds.</dd></div>
+            <div><dt>Device Check</dt><dd>Nine live checks show what works on your phone and what to do next.</dd></div>
+            <div><dt>Drag and drop</dt><dd>Drop Mac files on the phone window to send them over.</dd></div>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <!-- compare -->
+    <section class="compare" id="compare">
+      <div class="wrap">
+        <header class="head">
+          <h2>Why JH Mirror instead of the others?</h2>
+          <p>Most Android‑to‑Mac apps do one job: files, or notifications. Some charge a yearly fee. JH Mirror does all of it, for free, and you can read every line of its code.</p>
+        </header>
+        <div class="compare__scroll" tabindex="0" role="region" aria-label="Comparison table, scrolls sideways on small screens">
+          <table class="compare__table">
+            <caption class="sr">JH Mirror compared with KDE Connect, AirDroid Personal, MacDroid and OpenMTP</caption>
+            <thead>
+              <tr>
+                <th scope="col"><span class="sr">Feature</span></th>
+                <th scope="col" class="us">JH Mirror</th>
+                <th scope="col">KDE Connect</th>
+                <th scope="col">AirDroid Personal</th>
+                <th scope="col">MacDroid</th>
+                <th scope="col">OpenMTP</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Price</th>
+                <td class="us"><b>Free</b></td>
+                <td>Free</td>
+                <td>Free plan; Premium $29.99 a year</td>
+                <td>Free plan; Pro is paid</td>
+                <td>Free</td>
+              </tr>
+              <tr>
+                <th scope="row">Open source</th>
+                <td class="us"><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Works over Wi‑Fi</th>
+                <td class="us"><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>USB cable only</span></td>
+              </tr>
+              <tr>
+                <th scope="row">See and control the phone screen</th>
+                <td class="us"><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes, with sound</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Phone notifications on Mac</th>
+                <td class="us"><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes, with reply</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes, with reply</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Copy on phone, paste on Mac</th>
+                <td class="us"><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Automatic, text and images</span></td>
+                <td><span class="p">Text only; tap to send on Android 10+</span></td>
+                <td><span class="u">Not listed</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Copy files both ways</th>
+                <td class="us"><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes, no size limit</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+                <td><span class="p">Yes; 200 MB limit away from home on the free plan</span></td>
+                <td><span class="p">Pro only; free copies phone to Mac</span></td>
+                <td><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes</span></td>
+              </tr>
+              <tr>
+                <th scope="row">Phone as Mac webcam</th>
+                <td class="us"><span class="y"><svg class="ic"><use href="#i-yes"/></svg>Yes, with mic</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+                <td><span class="p">Remote camera viewer only</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+                <td><span class="n"><svg class="ic"><use href="#i-no"/></svg>No</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="compare__note">Checked against each app's own website in October 2026. “Not listed” means the app's site doesn't say. Microsoft Phone Link, the best‑known option, runs only on Windows. Product names belong to their owners.</p>
+      </div>
+    </section>
+
+    <!-- open source -->
+    <section class="oss" id="open-source">
+      <div class="wrap oss__in">
+        <div class="oss__copy">
+          <p class="kin">Free and open source</p>
+          <h2>Free for everyone. Every line of code is public.</h2>
+          <p>No trial, no paid tier, no ads and no account. The Mac app and the phone app are both open source, so anyone can check exactly what JH Mirror does with your phone, or build it themselves.</p>
+          <a class="btn btn--line" data-source href="#open-source" hidden><svg class="ic"><use href="#i-code"/></svg>View the source code</a>
+        </div>
+        <ul class="oss__list">
+          <li><b>$0</b><span>Every feature, forever</span></li>
+          <li><b>0</b><span>Accounts, ads or cloud servers</span></li>
+          <li><b>100%</b><span>Open source, Mac and phone app</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- setup -->
+    <section class="setup" id="setup">
+      <div class="wrap">
+        <header class="head">
+          <h2>Pair once. It takes about a minute.</h2>
+          <p>No cable, no Android SDK, and nothing to install by hand on the phone.</p>
+        </header>
+        <ol class="steps">
+          <li>
+            <h3>Install JH Mirror</h3>
+            <p>Drag it to Applications. The first time, macOS may ask you to allow it in <b>System Settings → Privacy &amp; Security → Open Anyway</b>.</p>
+          </li>
+          <li>
+            <h3>Turn on Developer options</h3>
+            <p>On the phone: <b>Settings → About phone → Software information</b>, then tap <b>Build number</b> seven times.</p>
+          </li>
+          <li>
+            <h3>Switch on Wireless debugging</h3>
+            <p>It's inside <b>Developer options</b>. Keep the phone and the Mac on the same Wi‑Fi.</p>
+          </li>
+          <li>
+            <h3>Scan the code</h3>
+            <p>Tap <b>Pair device with QR code</b> and scan the code on your Mac. A six‑digit code works too.</p>
+          </li>
+        </ol>
+        <div class="setup__done">
+          <img src="assets/img/pair.webp" width="632" height="904" loading="lazy" alt="The JH Mirror pairing screen on the Mac with a QR code">
+          <div>
+            <h3>Then JH Mirror takes over</h3>
+            <p>It installs its small phone app, sets the permissions it needs over the secure connection and opens your phone's screen. You don't dig through any phone settings.</p>
+            <p class="dim">On Android 8 to 10, connect a USB cable once, allow USB debugging and choose <b>Use USB‑connected phone</b>.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- privacy -->
+    <section class="privacy" id="privacy">
+      <div class="wrap privacy__grid">
+        <h2>Your phone stays between you and your Mac</h2>
+        <ul class="privacy__list">
+          <li><h3>Never leaves your network</h3><p>No account and no cloud server. The Mac and the phone talk directly.</p></li>
+          <li><h3>Encrypted</h3><p>Certificate‑pinned TLS with a random 256‑bit token, on top of Android's own authorized debugging link.</p></li>
+          <li><h3>Camera only when you ask</h3><p>The camera and microphone start only when you press them. Video is never recorded.</p></li>
+          <li><h3>Easy to switch off</h3><p>Unpair the Mac in Wireless debugging and uninstall the phone app. Access ends there.</p></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- requirements -->
+    <section class="reqs" id="requirements">
+      <div class="wrap">
+        <h2 class="reqs__title">What you need</h2>
+        <dl class="reqs__list">
+          <div><dt>Mac</dt><dd>Apple silicon, macOS 26</dd></div>
+          <div><dt>Android phone</dt><dd>Android 11+ on the same Wi‑Fi, or Android 8–10 with a USB cable</dd></div>
+          <div><dt>Pocket mode</dt><dd>Android 14+</dd></div>
+          <div><dt>Phone as webcam</dt><dd>Android 12+ and the free OBS camera component</dd></div>
+          <div><dt>Phone mic on calls</dt><dd>The free BlackHole 2ch audio driver</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <!-- faq -->
+    <section class="faq" id="faq">
+      <div class="wrap faq__grid">
+        <h2>Questions people ask before they download</h2>
+        <div class="faq__list">
+          <details>
+            <summary>How do I connect my Android phone to my Mac?</summary>
+            <p>Install JH Mirror on the Mac. On the phone, turn on Developer options and Wireless debugging, tap <b>Pair device with QR code</b> and scan the code JH Mirror shows. Keep both on the same Wi‑Fi. JH Mirror installs its small phone app and connects by itself.</p>
+          </details>
+          <details>
+            <summary>Is JH Mirror free?</summary>
+            <p>Yes. Every feature is free, with no trial, no paid tier, no ads and no account.</p>
+          </details>
+          <details>
+            <summary>Is JH Mirror open source?</summary>
+            <p>Yes. The Mac app and the phone app are open source, so anyone can read the code, check what it does and build it themselves. Screen mirroring is built on <a href="https://github.com/Genymobile/scrcpy" rel="noopener" target="_blank">scrcpy</a>, which is open source under the Apache 2.0 license.</p>
+          </details>
+          <details>
+            <summary>Can I AirDrop from Android to Mac?</summary>
+            <p>Most Android phones can't use AirDrop. JH Mirror does the same everyday job: drag photos and files from the phone into Finder, or drop Mac files onto the phone, over your Wi‑Fi.</p>
+          </details>
+          <details>
+            <summary>Is this an Android File Transfer alternative for Mac?</summary>
+            <p>Yes. It opens the phone's storage in a Mac window where you can browse folders, search, create folders and copy files both ways, without a USB cable. Every transfer is checked with SHA‑256 and large files resume after a restart.</p>
+          </details>
+          <details>
+            <summary>Can I copy and paste between Android and Mac?</summary>
+            <p>Yes. Text or an image you copy on the phone is ready to paste on the Mac with <kbd>⌘V</kbd>. Copies the phone marks as sensitive, such as passwords, are skipped. In the phone window, <kbd>⌘V</kbd> pastes Mac text into the phone.</p>
+          </details>
+          <details>
+            <summary>Can I use my Android phone as a webcam on my Mac?</summary>
+            <p>Yes, on Android 12 and newer. Start Phone Camera from the menu bar, pick the front or rear camera, then choose the OBS Virtual Camera in your video app. The phone microphone works too with the free BlackHole audio driver. Video is never recorded.</p>
+          </details>
+          <details>
+            <summary>Does it work with Samsung Galaxy and Pixel phones?</summary>
+            <p>It works with any phone running Android 11 or newer over Wi‑Fi, and Android 8 to 10 over a USB cable. It's developed and tested daily on a Samsung Galaxy S23 Ultra.</p>
+          </details>
+          <details>
+            <summary>macOS says it can't open the app. What now?</summary>
+            <p>JH Mirror isn't on the App Store yet, so the first launch needs one confirmation: open <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>. You only do it once.</p>
+          </details>
+          <details>
+            <summary>Android turns Wireless debugging off after a restart. Do I pair again?</summary>
+            <p>No. JH Mirror asks the phone to switch it back on over its encrypted channel and reconnects by itself, usually in about 20 seconds.</p>
+          </details>
+          <details>
+            <summary>Does mirroring unlock my phone or weaken its security?</summary>
+            <p>No. It keeps the phone awake while the mirror is open, but it never stores your PIN, never bypasses the lock screen and leaves your timeout and security settings as they were.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- download -->
+    <section class="cta" id="download">
+      <div class="wrap cta__in">
+        <img src="assets/img/logo-256.png" width="88" height="88" alt="" loading="lazy">
+        <h2>Put your Android phone on your Mac</h2>
+        <p>Free and open source. One Mac app sets up the phone side for you.</p>
+        <div class="cta__actions">
+          <a class="btn btn--blue btn--lg" data-download href="#download"><svg class="ic"><use href="#i-download"/></svg>Download for Mac</a>
+          <a class="btn btn--line btn--lg" data-source href="#open-source" hidden><svg class="ic"><use href="#i-code"/></svg>Source code</a>
+        </div>
+        <p class="cta__meta"><span data-version>Version 4.15</span> · Apple silicon · macOS 26</p>
+        <p class="cta__soon" id="dlSoon" hidden>The download link is coming soon.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot__in">
+      <a class="brand" href="#top"><img src="assets/img/logo-256.png" alt="" width="26" height="26"><span>JH Mirror</span></a>
+      <p>Made by Johirul Hoq Akash</p>
+      <nav class="foot__links" aria-label="Footer">
+        <a href="#features">Features</a>
+        <a href="#compare">Compare</a>
+        <a href="#setup">Setup</a>
+        <a href="#privacy">Privacy</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <p class="foot__legal">Screen mirroring is built on <a href="https://github.com/Genymobile/scrcpy" rel="noopener" target="_blank">scrcpy</a> (Apache 2.0). Android is a trademark of Google LLC. Mac, macOS, iPhone, AirDrop and Continuity are trademarks of Apple Inc. KDE Connect, AirDroid, MacDroid, OpenMTP and Phone Link belong to their respective owners. JH Mirror is an independent project, not affiliated with any of them. © <span id="year">2026</span></p>
+    </div>
+  </footer>
+
+  <script src="js/config.js"></script>
+  <script src="js/main.js" defer></script>
+</body>
+</html>

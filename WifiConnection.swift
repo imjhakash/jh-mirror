@@ -10,7 +10,7 @@ struct WifiPeer: Codable {
     var endpoint: String
 
     static let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Android Wireless", isDirectory: true)
+        .appendingPathComponent("JH Mirror", isDirectory: true)
     static let file = directory.appendingPathComponent("paired-wifi.json")
     static func load() -> WifiPeer? {
         guard let bytes = try? Data(contentsOf: file), let peer = try? JSONDecoder().decode(Self.self, from: bytes),
@@ -50,13 +50,15 @@ final class PairedHTTP: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
 
 final class WifiDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
     private let browser = NetServiceBrowser()
+    private let type: String
+    init(type: String = "_jhmirror._tcp.") { self.type = type }
     private var services: [NetService] = []
     private let lock = NSLock()
     private var resolved: [String: [String]] = [:]
     private var timer: Timer?
     func start() {
         browser.delegate = self
-        browser.searchForServices(ofType: "_androidwireless._tcp.", inDomain: "local.")
+        browser.searchForServices(ofType: type, inDomain: "local.")
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             for service in self?.services ?? [] { service.resolve(withTimeout: 5) }
         }
@@ -65,6 +67,13 @@ final class WifiDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelega
         lock.lock(); defer { lock.unlock() }
         return resolved.filter { $0.key == identity || $0.key.hasPrefix(identity + " (") }.flatMap(\.value)
     }
+    /// Endpoints of every resolved service whose name starts with `prefix`.
+    func endpoints(prefix: String) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return resolved.filter { $0.key.hasPrefix(prefix) }.flatMap(\.value)
+    }
+    /// Re-resolves everything now (for a user-requested reconnect).
+    func refresh() { for service in services { service.resolve(withTimeout: 5) } }
     func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
         services.append(service); service.delegate = self; service.resolve(withTimeout: 5)
     }

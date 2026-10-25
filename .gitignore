@@ -1,4 +1,10 @@
 # Build outputs and bundles (recreated by build_all.py)
+/dist.noindex/
+/dist/
+/release/
+/JH Mirror Companion.apk
+/JH Mirror Companion.apk.idsig
+# Earlier name
 /Android Wireless.app/
 /AndroidWireless-v2
 /Android Wireless Companion.apk
@@ -16,3 +22,7 @@ __pycache__/
 
 # Private signing key: back it up separately, never commit it
 *.keystore
+
+# Packed copy of website/ and local editor launch config
+/jh-mirror-website.zip
+/.claude/

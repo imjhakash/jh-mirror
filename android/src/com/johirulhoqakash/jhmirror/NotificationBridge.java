@@ -28,19 +28,8 @@ public final class NotificationBridge extends NotificationListenerService {
 
     @Override public void onNotificationPosted(StatusBarNotification sbn) {
         Notification n = sbn.getNotification();
-        // Detect incoming calls: CATEGORY_CALL, or an ongoing notification whose actions contain "answer"/"accept"
-        boolean isCall = Notification.CATEGORY_CALL.equals(n.category);
-        if (!isCall && (n.flags & Notification.FLAG_ONGOING_EVENT) != 0 && n.actions != null) {
-            for (Notification.Action a : n.actions) {
-                if (a != null && a.title != null) {
-                    String t = a.title.toString().toLowerCase();
-                    if (t.contains("answer") || t.contains("accept")) { isCall = true; break; }
-                }
-            }
-        }
         if (!BridgeState.enabled() || (n.flags & Notification.FLAG_GROUP_SUMMARY) != 0) return;
-        // Block ongoing events that are not incoming calls (music players, navigation, etc.)
-        if (!isCall && (n.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
+        if ((n.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
         Bundle extras = n.extras;
         if (sbn.getPackageName().equals(getPackageName()) && !extras.getBoolean("wireless_test", false)) return;
         try {
@@ -51,7 +40,7 @@ public final class NotificationBridge extends NotificationListenerService {
             CharSequence text = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
             if (text == null) text = extras.getCharSequence(Notification.EXTRA_TEXT, "");
             JSONObject item = new JSONObject();
-            item.put("type", isCall ? "call_ringing" : "posted"); item.put("key", sbn.getKey());
+            item.put("type", "posted"); item.put("key", sbn.getKey());
             item.put("package", sbn.getPackageName()); item.put("app", app);
             item.put("icon", AppIcons.get(this, sbn.getPackageName()));
             item.put("title", limit(title)); item.put("body", limit(text));

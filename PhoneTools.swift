@@ -63,37 +63,57 @@ final class RecentFileTile: NSView, NSDraggingSource {
     }
 }
 
-/// Drop Mac files here to copy them to the phone's Download folder.
-final class PhoneDropZone: NSView {
-    var onDrop: (([URL]) -> Void)?
-    private let label = NSTextField(labelWithString: "Drop Mac files here\nto send to the phone")
-    private var highlighted = false { didSet { needsDisplay = true } }
+/// One round icon button in the Phone Tools strip.
+private final class ToolButton: NSButton {
+    var onClick: (() -> Void)?
+    var active = false { didSet { refreshTint() } }
+    private var hovering = false { didSet { needsDisplay = true } }
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        registerForDraggedTypes([.fileURL])
-        label.alignment = .center
-        label.font = .systemFont(ofSize: 11)
-        label.textColor = .secondaryLabelColor
-        label.maximumNumberOfLines = 2
-        label.frame = bounds.insetBy(dx: 6, dy: 9)
-        addSubview(label)
-        toolTip = "Copies to the phone's Download folder. You can also drop files onto the phone window."
-        setAccessibilityLabel("Drop files to send to the phone")
+    init(symbol: String, tip: String) {
+        super.init(frame: NSRect(x: 0, y: 0, width: 36, height: 36))
+        isBordered = false
+        imagePosition = .imageOnly
+        setSymbol(symbol, tip: tip)
+        target = self; action = #selector(clicked)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        refreshTint()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var mouseDownCanMoveWindow: Bool { false }
-    override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 9, yRadius: 9)
-        path.lineWidth = highlighted ? 2 : 1.5
-        path.setLineDash([5, 4], count: 2, phase: 0)
-        (highlighted ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor).setStroke()
-        if highlighted { NSColor.controlAccentColor.withAlphaComponent(0.12).setFill(); path.fill() }
-        path.stroke()
+    func setSymbol(_ symbol: String, tip: String) {
+        image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)?
+            .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
+        toolTip = tip
+        setAccessibilityLabel(tip)
     }
+    private func refreshTint() { contentTintColor = active ? .controlAccentColor : .labelColor }
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func draw(_ dirtyRect: NSRect) {
+        if hovering || active {
+            (active ? NSColor.controlAccentColor.withAlphaComponent(0.18) : NSColor.labelColor.withAlphaComponent(0.08)).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 9, yRadius: 9).fill()
+        }
+        super.draw(dirtyRect)
+    }
+    @objc private func clicked() { onClick?() }
+}
+
+/// The strip's background: frosted capsule that also accepts Mac files to send to the phone.
+private final class ToolStripView: NSVisualEffectView {
+    var onDrop: (([URL]) -> Void)?
+    private var highlighted = false { didSet { layer?.borderWidth = highlighted ? 2 : 0 } }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        material = .hudWindow; blendingMode = .behindWindow; state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 14; layer?.masksToBounds = true
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        registerForDraggedTypes([.fileURL])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     private func urls(_ info: NSDraggingInfo) -> [URL] {
-        info.draggingPasteboard.readObjects(forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
     }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         let ok = !urls(sender).isEmpty; highlighted = ok; return ok ? .copy : []
@@ -107,6 +127,7 @@ final class PhoneDropZone: NSView {
     }
 }
 
+/// A slim, icon-only tool strip that follows the phone window. Hover for names.
 final class PhoneToolsPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -120,24 +141,32 @@ final class PhoneToolsPanel: NSPanel {
     var onOpenFiles: (() -> Void)?
     var onLatestFile: (() -> Void)?
     var onOpenPanel: (() -> Void)?
+    var onDeviceCheck: (() -> Void)?
     var onHide: (() -> Void)?
     var onCopyFile: ((URL) -> Void)?
     var onSendToPhone: (([URL]) -> Void)?
-    private let screenButton = NSButton()
-    private let audioButton = NSButton()
-    private let clipboardButton = NSButton()
-    private let clipboardMenu = NSPopUpButton(frame: .zero, pullsDown: true)
-    private let fileMenu = NSPopUpButton(frame: .zero, pullsDown: true)
-    private let status = NSTextField(wrappingLabelWithString: "")
-    private let files = NSTextField(wrappingLabelWithString: "")
-    private let recentLabel = NSTextField(labelWithString: "From phone · drag out, or click to copy")
-    private var tiles: [RecentFileTile] = []
-    private let dropZone = PhoneDropZone(frame: NSRect(x: 14, y: 62, width: 210, height: 50))
+    var onPhoneScreen: (() -> Void)?
+    var onApps: (() -> Void)?
+    var onFiles: (() -> Void)?
+    var onMedia: (() -> Void)?
+    var onVisibilityChanged: ((Bool) -> Void)?
+    private let windowButton = ToolButton(symbol: "macwindow", tip: "Show phone window")
+    private let screenButton = ToolButton(symbol: "iphone", tip: "Phone screen on")
+    private let audioButton = ToolButton(symbol: "speaker.wave.2", tip: "Phone audio on Mac")
+    private let clipboardButton = ToolButton(symbol: "doc.on.clipboard", tip: "Copy phone clipboard to Mac")
+    private let filesButton = ToolButton(symbol: "folder", tip: "Files · or drop Mac files here to send them to the phone")
+    private let moreButton = ToolButton(symbol: "ellipsis", tip: "More phone tools")
+    private let appsButton = ToolButton(symbol: "square.grid.2x2", tip: "Phone App Library · open or uninstall apps")
+    private let mediaButton = ToolButton(symbol: "photo.on.rectangle", tip: "Phone Media Library · photos, videos and audio")
+    private let spinner = NSProgressIndicator()
+    private var recent: [URL] = []
+    private var latestAvailable = false
     private var lastFrame: NSRect?
-    private var manuallyHidden = false
+    private(set) var expanded = UserDefaults.standard.bool(forKey: "phoneToolsExpanded")
 
     init() {
-        let size = NSSize(width: 238, height: 560)
+        let buttons = 8, step: CGFloat = 40, pad: CGFloat = 6
+        let size = NSSize(width: 48, height: pad * 2 + step * CGFloat(buttons) + 9)
         super.init(contentRect: NSRect(origin: .zero, size: size),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         title = "Phone Tools"
@@ -149,108 +178,93 @@ final class PhoneToolsPanel: NSPanel {
         backgroundColor = .clear
         isMovableByWindowBackground = true
         collectionBehavior = [.fullScreenAuxiliary]
-        let effect = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
-        effect.material = .sidebar
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.wantsLayer = true
-        effect.layer?.cornerRadius = 16
-        effect.layer?.masksToBounds = true
-        contentView = effect
-        let heading = NSTextField(labelWithString: "Phone Tools")
-        heading.font = .systemFont(ofSize: 18, weight: .semibold)
-        heading.frame = NSRect(x: 18, y: 511, width: 180, height: 25)
-        effect.addSubview(heading)
-        let close = NSButton(title: "×", target: self, action: #selector(hideTools))
-        close.isBordered = false
-        close.font = .systemFont(ofSize: 20)
-        close.frame = NSRect(x: 199, y: 511, width: 26, height: 26)
-        close.toolTip = "Hide tools. Reopen from Android Wireless in the menu bar."
-        effect.addSubview(close)
-        status.font = .systemFont(ofSize: 11)
-        status.textColor = .secondaryLabelColor
-        status.frame = NSRect(x: 18, y: 477, width: 200, height: 30)
-        effect.addSubview(status)
-        for (button, y, action) in [(screenButton, 436.0, #selector(toggleWindow)),
-                                    (audioButton, 394.0, #selector(toggleAudio)),
-                                    (clipboardButton, 352.0, #selector(toggleClipboard))] {
-            button.target = self; button.action = action
-            button.bezelStyle = .rounded
-            button.frame = NSRect(x: 14, y: y, width: 210, height: 34)
-            effect.addSubview(button)
+        let strip = ToolStripView(frame: NSRect(origin: .zero, size: size))
+        strip.onDrop = { [weak self] urls in self?.onSendToPhone?(urls) }
+        contentView = strip
+        var y = size.height - pad - 36
+        for (index, button) in [windowButton, screenButton, audioButton, clipboardButton, filesButton, mediaButton, appsButton, moreButton].enumerated() {
+            if index == 7 { // a hairline before "more"
+                let line = NSBox(frame: NSRect(x: 12, y: y + 36 + 4, width: 24, height: 1)); line.boxType = .separator
+                strip.addSubview(line); y -= 9
+            }
+            button.frame.origin = NSPoint(x: 6, y: y)
+            strip.addSubview(button)
+            y -= step
         }
-        screenButton.toolTip = "Hide/show the phone window. Audio, clipboard and file sync keep running."
-        audioButton.toolTip = "Turn phone audio on/off on this Mac. Changing audio restarts the screen session."
-        clipboardButton.toolTip = "Automatic text clipboard sync while the screen session runs. Changing this restarts the session."
-        clipboardMenu.frame = NSRect(x: 14, y: 308, width: 210, height: 32)
-        addMenu(clipboardMenu, [("Clipboard actions", nil),
-                              ("Copy phone clipboard → Mac (images & text)", #selector(copyPhoneClipboard)),
-                              ("Copy Mac text → Phone", #selector(setClipboard)),
-                              ("Copy phone text → Mac (screen session)", #selector(getClipboard))])
-        effect.addSubview(clipboardMenu)
-        fileMenu.frame = NSRect(x: 14, y: 264, width: 210, height: 32)
-        addMenu(fileMenu, [("File sharing", nil),
-                         ("Choose files on phone…", #selector(pickFiles)),
-                         ("Open received folder", #selector(openFiles)),
-                         ("Show latest in Finder", #selector(latestFile))])
-        effect.addSubview(fileMenu)
-        files.font = .systemFont(ofSize: 11)
-        files.textColor = .secondaryLabelColor
-        files.maximumNumberOfLines = 3
-        files.frame = NSRect(x: 18, y: 205, width: 200, height: 48)
-        effect.addSubview(files)
-        recentLabel.font = .systemFont(ofSize: 10)
-        recentLabel.textColor = .secondaryLabelColor
-        recentLabel.frame = NSRect(x: 16, y: 180, width: 210, height: 16)
-        effect.addSubview(recentLabel)
-        for index in 0..<4 {
-            let tile = RecentFileTile(frame: NSRect(x: 14 + CGFloat(index) * 54, y: 124, width: 48, height: 48))
-            tile.onClick = { [weak self] url in self?.onCopyFile?(url) }
-            tiles.append(tile); effect.addSubview(tile)
+        spinner.style = .spinning; spinner.controlSize = .small; spinner.isDisplayedWhenStopped = false
+        spinner.frame = NSRect(x: 30, y: windowButton.frame.minY + 2, width: 12, height: 12)
+        strip.addSubview(spinner)
+        windowButton.onClick = { [weak self] in self?.onWindow?() }
+        screenButton.onClick = { [weak self] in self?.onPhoneScreen?() }
+        audioButton.onClick = { [weak self] in self?.onAudio?() }
+        clipboardButton.onClick = { [weak self] in self?.onCopyPhoneClipboard?() }
+        filesButton.onClick = { [weak self] in
+            guard let self else { return }; if let onFiles = self.onFiles { onFiles() } else { self.showFilesMenu() }
         }
-        dropZone.onDrop = { [weak self] urls in self?.onSendToPhone?(urls) }
-        effect.addSubview(dropZone)
-        let panel = NSButton(title: "Notifications & setup", target: self, action: #selector(openPanel))
-        panel.bezelStyle = .rounded
-        panel.frame = NSRect(x: 14, y: 20, width: 210, height: 32)
-        effect.addSubview(panel)
-        setRecentFiles([])
+        mediaButton.onClick = { [weak self] in self?.onMedia?() }
+        moreButton.onClick = { [weak self] in self?.showMoreMenu() }
+        appsButton.onClick = { [weak self] in self?.onApps?() }
     }
-    private func addMenu(_ popup: NSPopUpButton, _ items: [(String, Selector?)]) {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        for (title, action) in items {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            item.target = self; menu.addItem(item)
-        }
-        popup.menu = menu
+
+    private func menuItem(_ title: String, symbol: String? = nil, enabled: Bool = true, action: @escaping () -> Void) -> NSMenuItem {
+        let item = ClosureMenuItem(title: title, action: action)
+        if let symbol { item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+        item.isEnabled = enabled
+        return item
     }
+
+    private func showFilesMenu() {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        menu.addItem(menuItem("Choose Files on Phone…", symbol: "iphone.and.arrow.forward") { [weak self] in self?.onPickFiles?() })
+        menu.addItem(menuItem("Open Received Files", symbol: "folder") { [weak self] in self?.onOpenFiles?() })
+        menu.addItem(menuItem("Show Latest in Finder", symbol: "magnifyingglass", enabled: latestAvailable) { [weak self] in self?.onLatestFile?() })
+        if !recent.isEmpty {
+            menu.addItem(.separator())
+            let header = NSMenuItem(title: "Copy a recent file", action: nil, keyEquivalent: ""); header.isEnabled = false
+            menu.addItem(header)
+            for url in recent.prefix(5) {
+                let item = menuItem(url.lastPathComponent) { [weak self] in self?.onCopyFile?(url) }
+                item.image = NSWorkspace.shared.icon(forFile: url.path); item.image?.size = NSSize(width: 16, height: 16)
+                menu.addItem(item)
+            }
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: filesButton.frame.maxX + 6, y: filesButton.frame.maxY), in: contentView)
+    }
+
+    private func showMoreMenu() {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        menu.addItem(menuItem("Choose Files on Phone…", symbol: "iphone.and.arrow.forward") { [weak self] in self?.onPickFiles?() })
+        menu.addItem(menuItem("Open Received Files", symbol: "folder") { [weak self] in self?.onOpenFiles?() })
+        menu.addItem(menuItem("Copy Mac Text to Phone", symbol: "arrow.up.doc.on.clipboard") { [weak self] in self?.onSetClipboard?() })
+        menu.addItem(menuItem("Clipboard Sync On/Off", symbol: "arrow.left.arrow.right") { [weak self] in self?.onClipboard?() })
+        menu.addItem(.separator())
+        menu.addItem(menuItem("Dashboard…", symbol: "rectangle.grid.1x2") { [weak self] in self?.onOpenPanel?() })
+        menu.addItem(menuItem("Device Check…", symbol: "checklist") { [weak self] in self?.onDeviceCheck?() })
+        menu.addItem(menuItem("Hide Tools", symbol: "xmark") { [weak self] in self?.hideTools() })
+        menu.popUp(positioning: nil, at: NSPoint(x: moreButton.frame.maxX + 6, y: moreButton.frame.maxY), in: contentView)
+    }
+
     func update(running: Bool, hidden: Bool, audio: Bool, clipboard: Bool, busy: Bool, restarting: Bool,
-                fileStatus: String, latest: Bool) {
-        screenButton.title = running ? (hidden ? "Window: Off" : "Window: On") : "Open phone window"
-        audioButton.title = audio ? "Audio: On" : "Audio: Off"
-        clipboardButton.title = clipboard ? "Clipboard sync: On" : "Clipboard sync: Off"
-        screenButton.isEnabled = !busy
+                fileStatus: String, latest: Bool, phoneScreenOff: Bool = false) {
+        windowButton.setSymbol(running ? "macwindow" : "play.rectangle",
+                               tip: running ? (hidden ? "Show phone window" : "Hide phone window") : "Open phone screen")
+        windowButton.active = running && !hidden
+        screenButton.setSymbol(phoneScreenOff ? "iphone.slash" : "iphone",
+                               tip: phoneScreenOff ? "Phone screen is off · click to turn it on" : "Turn the phone screen off while mirroring")
+        screenButton.active = phoneScreenOff
+        audioButton.setSymbol(audio ? "speaker.wave.2" : "speaker.slash", tip: audio ? "Phone audio on Mac · click to mute" : "Phone audio is off · click to play on Mac")
+        audioButton.active = audio
+        windowButton.isEnabled = !busy
         audioButton.isEnabled = !restarting
-        clipboardButton.isEnabled = !restarting
-        // The phone-clipboard pull works over ADB even without a screen session.
-        clipboardMenu.isEnabled = true
-        clipboardMenu.item(at: 2)?.isEnabled = running && !busy
-        clipboardMenu.item(at: 3)?.isEnabled = running && !busy
-        fileMenu.item(at: 3)?.isEnabled = latest
-        status.stringValue = busy ? "Connecting phone session…"
-            : running ? (hidden ? "Window hidden · sync continues" : "Normal scroll · wireless screen")
-            : "Screen closed · other sync continues"
-        if files.stringValue != fileStatus { files.stringValue = fileStatus }
+        screenButton.isEnabled = !restarting
+        if busy { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+        latestAvailable = latest
+        filesButton.toolTip = fileStatus.isEmpty ? "Files" : fileStatus + "\nDrop Mac files here to send them to the phone"
     }
-    /// Shows the newest received files first.
-    func setRecentFiles(_ urls: [URL]) {
-        for (index, tile) in tiles.enumerated() {
-            let url = index < urls.count ? urls[index] : nil
-            if tile.url != url { tile.url = url }
-        }
-        recentLabel.stringValue = urls.isEmpty ? "Files from the phone appear here" : "From phone · drag out, or click to copy"
-    }
+
+    /// Newest received files first (offered in the Files menu).
+    func setRecentFiles(_ urls: [URL]) { recent = urls }
+
     func follow(_ frame: NSRect, active: Bool, visible: Bool, keepVisible: Bool) {
         lastFrame = frame
         let screen = NSScreen.screens.max { a, b in
@@ -258,30 +272,37 @@ final class PhoneToolsPanel: NSPanel {
             return x.width * x.height < y.width * y.height
         } ?? NSScreen.main
         let available = screen?.visibleFrame ?? frame
-        var x = frame.maxX + 10
-        if x + self.frame.width > available.maxX { x = frame.minX - self.frame.width - 10 }
+        var x = frame.maxX + 8
+        if x + self.frame.width > available.maxX { x = frame.minX - self.frame.width - 8 }
         x = min(max(available.minX + 4, x), available.maxX - self.frame.width - 4)
         let y = min(max(available.minY + 4, frame.maxY - self.frame.height), available.maxY - self.frame.height - 4)
         setFrameOrigin(NSPoint(x: x, y: y))
-        guard !manuallyHidden else { return }
+        guard expanded else { orderOut(nil); return }
         if keepVisible || (active && visible) { orderFrontRegardless() }
         else if !visible { orderOut(nil) }
     }
     func showTools(focus: Bool = false) {
-        manuallyHidden = false
+        expanded = true; UserDefaults.standard.set(true, forKey: "phoneToolsExpanded")
+        onVisibilityChanged?(true)
         if lastFrame == nil { center() }
         if focus { makeKeyAndOrderFront(nil) }
         else { orderFrontRegardless() }
     }
-    @objc private func hideTools() { manuallyHidden = true; orderOut(nil); onHide?() }
-    @objc private func toggleWindow() { onWindow?() }
-    @objc private func toggleAudio() { onAudio?() }
-    @objc private func toggleClipboard() { onClipboard?() }
-    @objc private func getClipboard() { onGetClipboard?() }
-    @objc private func setClipboard() { onSetClipboard?() }
-    @objc private func copyPhoneClipboard() { onCopyPhoneClipboard?() }
-    @objc private func pickFiles() { onPickFiles?() }
-    @objc private func openFiles() { onOpenFiles?() }
-    @objc private func latestFile() { onLatestFile?() }
-    @objc private func openPanel() { onOpenPanel?() }
+    func hideTools() {
+        expanded = false; UserDefaults.standard.set(false, forKey: "phoneToolsExpanded")
+        orderOut(nil); onVisibilityChanged?(false); onHide?()
+    }
+    func toggleTools() { if expanded { hideTools() } else { showTools() } }
+}
+
+/// NSMenuItem that runs a closure.
+private final class ClosureMenuItem: NSMenuItem {
+    private let handler: () -> Void
+    init(title: String, action handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+    }
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func run() { handler() }
 }

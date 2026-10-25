@@ -1,34 +1,676 @@
-diff -ruN a/app/meson.build b/app/meson.build
---- a/app/meson.build	2026-10-14 01:09:52
-+++ b/app/meson.build	2026-10-13 22:39:59
-@@ -150,6 +150,12 @@
+--- a/app/meson.build
++++ b/app/meson.build
+@@ -150,6 +150,13 @@
      dependency('sdl3', version: '>= 3.2.0', static: static),
  ]
  
 +if host_machine.system() == 'darwin'
 +    add_languages('objc', native: false)
-+    src += [ 'src/macos_window.m' ]
-+    dependencies += dependency('appleframeworks', modules: ['Cocoa'])
++    src += [ 'src/macos_window.m', 'src/aw_preview.c', 'src/aw_camera_sink.m' ]
++    add_project_arguments('-fobjc-arc', language: 'objc')
++    dependencies += dependency('appleframeworks', modules: ['Cocoa', 'QuartzCore', 'CoreMediaIO', 'CoreMedia', 'CoreVideo', 'CoreImage'])
 +endif
 +
  if v4l2_support
      dependencies += dependency('libavdevice', static: static)
  endif
-diff -ruN a/app/src/events.h b/app/src/events.h
---- a/app/src/events.h	2026-10-14 01:09:52
-+++ b/app/src/events.h	2026-10-13 22:43:15
-@@ -22,6 +22,8 @@
+--- a/app/src/audio_player.c
++++ b/app/src/audio_player.c
+@@ -3,6 +3,9 @@
+ #include "util/log.h"
+ #include "util/memory.h"
+ #include "SDL3/SDL_hints.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ 
+ /** Downcast frame_sink to sc_audio_player */
+ #define DOWNCAST(SINK) container_of(SINK, struct sc_audio_player, frame_sink)
+@@ -44,6 +47,10 @@
+     struct sc_audio_player *ap = DOWNCAST(sink);
+ 
+     bool ok = sc_audio_regulator_push(&ap->audioreg, frame);
++    if (ok && !ap->aw_announced && (getenv("AW_AUDIO_OUTPUT_DEVICE") || getenv("AW_PHONE_TOOLS"))) {
++        ap->aw_announced = true;
++        puts(getenv("AW_AUDIO_OUTPUT_DEVICE") ? "AW_MIC_READY" : "AW_AUDIO_READY"); fflush(stdout);
++    }
+     return ok ? SC_SINK_OK : SC_SINK_KO;
+ }
+ 
+@@ -103,7 +110,27 @@
+         .channels = nb_channels,
+     };
+ 
+-    ap->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
++    ap->aw_announced = false;
++    SDL_AudioDeviceID output = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
++    const char *requested = getenv("AW_AUDIO_OUTPUT_DEVICE");
++    if (requested && *requested) {
++        // A call microphone must never fall back to speakers (feedback / privacy).
++        int count = 0;
++        SDL_AudioDeviceID *devices = SDL_GetAudioPlaybackDevices(&count);
++        output = 0;
++        for (int i = 0; devices && i < count; ++i) {
++            const char *name = SDL_GetAudioDeviceName(devices[i]);
++            if (name && !strcmp(name, requested)) { output = devices[i]; break; }
++        }
++        SDL_free(devices);
++        if (!output) {
++            LOGE("Requested call audio output is unavailable");
++            free(ap->aout_buffer);
++            sc_audio_regulator_destroy(&ap->audioreg);
++            return false;
++        }
++    }
++    ap->stream = SDL_OpenAudioDeviceStream(output,
+                                            &spec,
+                                            sc_audio_player_stream_callback, ap);
+     if (!ap->stream) {
+--- a/app/src/audio_player.h
++++ b/app/src/audio_player.h
+@@ -28,6 +28,7 @@
+     SDL_AudioStream *stream;
+     SDL_AudioDeviceID device; // owned by the audio stream
+     struct sc_audio_regulator audioreg;
++    bool aw_announced;
+ };
+ 
+ void
+--- /dev/null
++++ b/app/src/aw_camera_sink.h
+@@ -0,0 +1,12 @@
++#ifndef SC_AW_CAMERA_SINK_H
++#define SC_AW_CAMERA_SINK_H
++#include "trait/frame_sink.h"
++
++// The CoreMediaIO connection is owned by the video decoder thread.
++struct sc_aw_camera_sink {
++    struct sc_frame_sink frame_sink;
++    void *context;
++};
++bool sc_aw_camera_sink_init(struct sc_aw_camera_sink *camera);
++void sc_aw_camera_sink_destroy(struct sc_aw_camera_sink *camera);
++#endif
+--- /dev/null
++++ b/app/src/aw_camera_sink.m
+@@ -0,0 +1,279 @@
++#include "aw_camera_sink.h"
++#import <Foundation/Foundation.h>
++#import <CoreMediaIO/CoreMediaIO.h>
++#import <CoreImage/CoreImage.h>
++#import <CoreVideo/CoreVideo.h>
++#include <stdio.h>
++#include <stdatomic.h>
++#include <string.h>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include "util/log.h"
++
++static void queue_changed(CMIOStreamID stream, void *token, void *context) { (void)stream; (void)token; (void)context; }
++// Static callback state outlives any late CMIO notification during shutdown. One writer per helper process.
++static _Atomic bool accepting_notifications;
++static _Atomic uint64_t accepted_frames, last_accepted, last_announced;
++static void scheduled_output(UInt64 sequence, UInt64 host_time, void *context) {
++    (void)sequence; (void)host_time; (void)context;
++    if (!atomic_load(&accepting_notifications)) return;
++    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    atomic_store(&last_accepted, now); atomic_fetch_add(&accepted_frames, 1);
++    uint64_t previous = atomic_load(&last_announced);
++    if (now - previous > NSEC_PER_SEC && atomic_compare_exchange_strong(&last_announced, &previous, now)) {
++        puts("AW_CAMERA_FRAME"); fflush(stdout);
++    }
++}
++
++// The caller explicitly selects a known device. Never send camera frames to a default device.
++
++@interface JHCameraWriter : NSObject
++@property CMIODeviceID device;
++@property CMIOStreamID stream;
++@property(nonatomic) CMSimpleQueueRef buffers;
++@property(nonatomic) CVPixelBufferPoolRef pool;
++@property(nonatomic) CMVideoFormatDescriptionRef format;
++@property CIContext *imageContext;
++@property int width;
++@property int height;
++@property BOOL started;
++@property uint64_t lastEnqueue;
++@property(nonatomic) void *controlMap;
++@property(nonatomic) void *previewMap;
++@property(nonatomic) CVPixelBufferRef thumbnail;
++@property uint64_t lastPreview;
++@property uint8_t controls;
++- (BOOL)connect;
++- (int)pushFrame:(const AVFrame *)frame;
++@end
++
++enum { JHPreviewWidth = 640, JHPreviewHeight = 360, JHPreviewBytes = 64 + 640 * 360 * 4 };
++static void *map_private_file(const char *path, size_t bytes, BOOL writing) {
++    int fd = open(path, (writing ? O_RDWR : O_RDONLY) | O_CLOEXEC | O_NOFOLLOW);
++    if (fd < 0) return NULL;
++    struct stat info;
++    BOOL valid = !fstat(fd, &info) && S_ISREG(info.st_mode) && info.st_uid == getuid()
++        && !(info.st_mode & 077) && info.st_size == (off_t)bytes;
++    void *map = valid ? mmap(NULL, bytes, PROT_READ | (writing ? PROT_WRITE : 0), MAP_SHARED, fd, 0) : MAP_FAILED;
++    close(fd); return map == MAP_FAILED ? NULL : map;
++}
++
++@implementation JHCameraWriter
++- (BOOL)connect {
++    const char *control = getenv("JH_CAMERA_CONTROL_PATH"), *preview = getenv("JH_CAMERA_PREVIEW_PATH");
++    if (control) {
++        _controlMap = map_private_file(control, 8, NO);
++        if (!_controlMap || memcmp(_controlMap, "JHC1", 4)) { LOGE("Private camera controls unavailable"); return NO; }
++    }
++    if (preview) {
++        _previewMap = map_private_file(preview, JHPreviewBytes, YES);
++        if (!_previewMap) { LOGE("Private camera preview unavailable"); return NO; }
++        memcpy(_previewMap, "AWP1", 4);
++    }
++    const char *requested = getenv("JH_CAMERA_DEVICE_UID");
++    NSString *uidString = requested ? [NSString stringWithUTF8String:requested] : nil;
++    if (!uidString || ![[NSUUID alloc] initWithUUIDString:uidString]) return NO;
++    CMIOObjectPropertyAddress address = {kCMIOHardwarePropertyDevices, kCMIOObjectPropertyScopeGlobal, kCMIOObjectPropertyElementMain};
++    UInt32 size = 0;
++    if (CMIOObjectGetPropertyDataSize(kCMIOObjectSystemObject, &address, 0, NULL, &size) || !size || size > 4096) return NO;
++    CMIODeviceID devices[1024];
++    if (CMIOObjectGetPropertyData(kCMIOObjectSystemObject, &address, 0, NULL, size, &size, devices)) return NO;
++    for (unsigned i = 0; i < size / sizeof(CMIODeviceID); i++) {
++        CFStringRef uid = NULL; UInt32 bytes = sizeof(uid);
++        CMIOObjectPropertyAddress property = {kCMIODevicePropertyDeviceUID, kCMIOObjectPropertyScopeGlobal, kCMIOObjectPropertyElementMain};
++        if (!CMIOObjectGetPropertyData(devices[i], &property, 0, NULL, bytes, &bytes, &uid) && uid) {
++            BOOL match = [(__bridge NSString *)uid caseInsensitiveCompare:uidString] == NSOrderedSame;
++            CFRelease(uid);
++            if (match) { _device = devices[i]; break; }
++        }
++    }
++    if (!_device) { LOGE("Virtual camera device was not found"); return NO; }
++    address.mSelector = kCMIODevicePropertyStreams; address.mScope = kCMIOObjectPropertyScopeGlobal;
++    size = 0;
++    CMIOStreamID streams[32];
++    if (CMIOObjectGetPropertyDataSize(_device, &address, 0, NULL, &size) || !size || size > sizeof(streams)) return NO;
++    if (CMIOObjectGetPropertyData(_device, &address, 0, NULL, size, &size, streams)) return NO;
++    address.mSelector = kCMIOStreamPropertyDirection;
++    for (unsigned i = 0; i < size / sizeof(CMIOStreamID); i++) {
++        UInt32 direction = 1, bytes = sizeof(direction);
++        if (!CMIOObjectGetPropertyData(streams[i], &address, 0, NULL, bytes, &bytes, &direction) && !direction) {
++            if (_stream) return NO; // An ambiguous output is not safe to guess.
++            _stream = streams[i];
++        }
++    }
++    if (!_stream) { LOGE("Virtual camera has no unambiguous producer stream"); return NO; }
++    address.mSelector = kCMIOStreamPropertyFormatDescription;
++    CMFormatDescriptionRef advertised = NULL; UInt32 bytes = sizeof(advertised);
++    OSStatus formatStatus = CMIOObjectGetPropertyData(_stream, &address, 0, NULL, bytes, &bytes, &advertised);
++    if (formatStatus || !advertised) { LOGE("Virtual camera format query failed: %d", (int)formatStatus); return NO; }
++    CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(advertised);
++    BOOL supported = CMFormatDescriptionGetMediaSubType(advertised) == kCVPixelFormatType_32BGRA;
++    CFRelease(advertised);
++    if (!supported || dimensions.width <= 0 || dimensions.height <= 0 || dimensions.width > 1920 || dimensions.height > 1080) { LOGE("Unsupported virtual camera format: %dx%d", dimensions.width, dimensions.height); return NO; }
++    _width = dimensions.width; _height = dimensions.height;
++    OSStatus queueStatus = CMIOStreamCopyBufferQueue(_stream, queue_changed, NULL, &_buffers);
++    if (queueStatus || !_buffers) { LOGE("Virtual camera queue failed: %d", (int)queueStatus); return NO; }
++    address.mSelector = kCMIOStreamPropertyScheduledOutputNotificationProc;
++    CMIOStreamScheduledOutputNotificationProcAndRefCon notification = {scheduled_output, NULL};
++    OSStatus notificationStatus = CMIOObjectSetPropertyData(_stream, &address, 0, NULL, sizeof(notification), &notification);
++    if (notificationStatus) { LOGE("Virtual camera acknowledgements unavailable: %d", (int)notificationStatus); return NO; }
++    NSDictionary *attributes = @{(id)kCVPixelBufferWidthKey:@(_width), (id)kCVPixelBufferHeightKey:@(_height),
++        (id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_32BGRA), (id)kCVPixelBufferIOSurfacePropertiesKey:@{}};
++    if (CVPixelBufferPoolCreate(NULL, NULL, (__bridge CFDictionaryRef)attributes, &_pool)) return NO;
++    _imageContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer:@NO, kCIContextCacheIntermediates:@NO}];
++    atomic_store(&accepted_frames, 0); atomic_store(&last_announced, 0);
++    atomic_store(&last_accepted, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); atomic_store(&accepting_notifications, true);
++    OSStatus startStatus = CMIODeviceStartStream(_device, _stream);
++    _started = startStatus == noErr;
++    if (!_started) LOGE("Virtual camera start failed: %d", (int)startStatus);
++    _lastEnqueue = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    return _started;
++}
++- (void)dealloc {
++    atomic_store(&accepting_notifications, false);
++    if (_started) CMIODeviceStopStream(_device, _stream);
++    if (_stream) {
++        CMIOObjectPropertyAddress address = {kCMIOStreamPropertyScheduledOutputNotificationProc, kCMIOObjectPropertyScopeGlobal, kCMIOObjectPropertyElementMain};
++        CMIOStreamScheduledOutputNotificationProcAndRefCon notification = {NULL, NULL};
++        CMIOObjectSetPropertyData(_stream, &address, 0, NULL, sizeof(notification), &notification);
++    }
++    if (_buffers) {
++        const void *sample;
++        while ((sample = CMSimpleQueueDequeue(_buffers))) CFRelease(sample);
++        CFRelease(_buffers);
++    }
++    if (_pool) CVPixelBufferPoolRelease(_pool);
++    if (_format) CFRelease(_format);
++    if (_controlMap) munmap(_controlMap, 8);
++    if (_previewMap) munmap(_previewMap, JHPreviewBytes);
++    if (_thumbnail) CVPixelBufferRelease(_thumbnail);
++}
++
++- (void)publishPreview:(CVPixelBufferRef)image controls:(uint8_t)controls {
++    if (!_previewMap || !(controls & 8)) return;
++    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    if (now - _lastPreview < 80000000) return;
++    _lastPreview = now;
++    if (!_thumbnail) {
++        NSDictionary *attributes = @{(id)kCVPixelBufferIOSurfacePropertiesKey:@{}};
++        if (CVPixelBufferCreate(NULL, JHPreviewWidth, JHPreviewHeight, kCVPixelFormatType_32BGRA,
++            (__bridge CFDictionaryRef)attributes, &_thumbnail)) return;
++    }
++    CIImage *scaled = [[CIImage imageWithCVPixelBuffer:image] imageByApplyingTransform:
++        CGAffineTransformMakeScale((double)JHPreviewWidth / _width, (double)JHPreviewHeight / _height)];
++    [_imageContext render:scaled toCVPixelBuffer:_thumbnail];
++    CVPixelBufferLockBaseAddress(_thumbnail, kCVPixelBufferLock_ReadOnly);
++    _Atomic uint64_t *sequence = (_Atomic uint64_t *)((uint8_t *)_previewMap + 8);
++    atomic_fetch_add_explicit(sequence, 1, memory_order_acq_rel);
++    uint32_t dimensions[] = {JHPreviewWidth, JHPreviewHeight, JHPreviewWidth * 4};
++    memcpy((uint8_t *)_previewMap + 16, dimensions, sizeof(dimensions));
++    const uint8_t *pixels = CVPixelBufferGetBaseAddress(_thumbnail);
++    size_t stride = CVPixelBufferGetBytesPerRow(_thumbnail);
++    for (unsigned y = 0; y < JHPreviewHeight; y++) {
++        memcpy((uint8_t *)_previewMap + 64 + y * JHPreviewWidth * 4, pixels + y * stride, JHPreviewWidth * 4);
++    }
++    atomic_fetch_add_explicit(sequence, 1, memory_order_release);
++    CVPixelBufferUnlockBaseAddress(_thumbnail, kCVPixelBufferLock_ReadOnly);
++}
++- (CVPixelBufferRef)copyImageForFrame:(const AVFrame *)frame CF_RETURNS_RETAINED {
++    if (!frame) return NULL;
++    if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX && frame->data[3]) {
++        return CVPixelBufferRetain((CVPixelBufferRef)frame->data[3]);
++    }
++    BOOL nv12 = frame->format == AV_PIX_FMT_NV12;
++    BOOL planar = frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P;
++    if ((!nv12 && !planar) || frame->width <= 0 || frame->height <= 0 || frame->width > 8192 || frame->height > 8192
++            || frame->width % 2 || frame->height % 2 || !frame->data[0] || !frame->data[1]
++            || llabs(frame->linesize[0]) < frame->width || llabs(frame->linesize[1]) < frame->width / (nv12 ? 1 : 2)
++            || (planar && (!frame->data[2] || llabs(frame->linesize[2]) < frame->width / 2))) return NULL;
++    OSType format = frame->color_range == AVCOL_RANGE_JPEG || frame->format == AV_PIX_FMT_YUVJ420P
++        ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
++    CVPixelBufferRef image = NULL;
++    if (CVPixelBufferCreate(NULL, frame->width, frame->height, format, NULL, &image)) return NULL;
++    CVPixelBufferLockBaseAddress(image, 0);
++    uint8_t *yplane = CVPixelBufferGetBaseAddressOfPlane(image, 0);
++    size_t ys = CVPixelBufferGetBytesPerRowOfPlane(image, 0);
++    for (int y = 0; y < frame->height; y++) memcpy(yplane + y * ys, frame->data[0] + y * frame->linesize[0], frame->width);
++    uint8_t *uv = CVPixelBufferGetBaseAddressOfPlane(image, 1);
++    size_t us = CVPixelBufferGetBytesPerRowOfPlane(image, 1);
++    for (int y = 0; y < frame->height / 2; y++) {
++        if (nv12) memcpy(uv + y * us, frame->data[1] + y * frame->linesize[1], frame->width);
++        else for (int x = 0; x < frame->width / 2; x++) {
++            uv[y * us + 2 * x] = frame->data[1][y * frame->linesize[1] + x];
++            uv[y * us + 2 * x + 1] = frame->data[2][y * frame->linesize[2] + x];
++        }
++    }
++    CVPixelBufferUnlockBaseAddress(image, 0);
++    CVBufferSetAttachment(image, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVAttachmentMode_ShouldPropagate);
++    return image;
++}
++- (int)pushFrame:(const AVFrame *)frame {
++    if (!_buffers || !_pool || !_imageContext) return -1;
++    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++    // Drop a congested frame; fail if the device stops consuming for three seconds.
++    if (CMSimpleQueueGetCount(_buffers) >= MIN(2, CMSimpleQueueGetCapacity(_buffers))) {
++        return now - _lastEnqueue > 3 * NSEC_PER_SEC ? -1 : 0;
++    }
++    CVPixelBufferRef source = [self copyImageForFrame:frame];
++    if (!source) return -1;
++    CVPixelBufferRef output = NULL;
++    NSDictionary *limits = @{(id)kCVPixelBufferPoolAllocationThresholdKey:@6};
++    CVReturn result = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(NULL, _pool, (__bridge CFDictionaryRef)limits, &output);
++    if (result) { CVPixelBufferRelease(source); return result == kCVReturnWouldExceedAllocationThreshold ? 0 : -1; }
++    CIImage *image = [CIImage imageWithCVPixelBuffer:source];
++    uint8_t controls = _controlMap ? atomic_load_explicit((_Atomic uint8_t *)((uint8_t *)_controlMap + 4), memory_order_acquire) : _controls;
++    const int orientations[] = {1, 6, 3, 8}; // clockwise 0, 90, 180, 270 degrees
++    image = [image imageByApplyingOrientation:orientations[controls & 3]];
++    if (controls & 4) image = [image imageByApplyingOrientation:2];
++    image = [image imageByApplyingTransform:CGAffineTransformMakeTranslation(-image.extent.origin.x, -image.extent.origin.y)];
++    double scale = MIN((double)_width / image.extent.size.width, (double)_height / image.extent.size.height);
++    CGAffineTransform transform = CGAffineTransformMake(scale, 0, 0, scale,
++        (_width - image.extent.size.width * scale) / 2, (_height - image.extent.size.height * scale) / 2);
++    CIImage *black = [[CIImage imageWithColor:[CIColor colorWithRed:0 green:0 blue:0 alpha:1]]
++        imageByCroppingToRect:CGRectMake(0, 0, _width, _height)];
++    [_imageContext render:[[image imageByApplyingTransform:transform] imageByCompositingOverImage:black] toCVPixelBuffer:output];
++    [self publishPreview:output controls:controls];
++    CVPixelBufferRelease(source);
++    if (!_format && CMVideoFormatDescriptionCreateForImageBuffer(NULL, output, &_format)) { CVPixelBufferRelease(output); return -1; }
++    CMSampleTimingInfo timing = {CMTimeMake(1, 30), CMClockGetTime(CMClockGetHostTimeClock()), kCMTimeInvalid};
++    CMSampleBufferRef sample = NULL;
++    OSStatus status = CMSampleBufferCreateReadyWithImageBuffer(NULL, output, _format, &timing, &sample);
++    CVPixelBufferRelease(output);
++    if (status) return -1;
++    if (CMSimpleQueueEnqueue(_buffers, sample)) { CFRelease(sample); return -1; }
++    _lastEnqueue = now;
++    // Ownership of the sample transfers through the CMIO sink buffer queue.
++    return 1;
++}
++@end
++
++static bool camera_open(struct sc_frame_sink *sink, const AVCodecContext *ctx, const struct sc_stream_session *session) {
++    (void)ctx; (void)session;
++    struct sc_aw_camera_sink *camera = container_of(sink, struct sc_aw_camera_sink, frame_sink);
++    @autoreleasepool {
++        JHCameraWriter *writer = [JHCameraWriter new];
++        if (![writer connect]) { LOGE("The selected virtual camera is unavailable or writer access was denied"); return false; }
++        camera->context = (void *)CFBridgingRetain(writer); return true;
++    }
++}
++static void camera_close(struct sc_frame_sink *sink) {
++    struct sc_aw_camera_sink *camera = container_of(sink, struct sc_aw_camera_sink, frame_sink);
++    if (camera->context) { CFRelease(camera->context); camera->context = NULL; }
++}
++static enum sc_sink_result camera_push(struct sc_frame_sink *sink, const AVFrame *frame) {
++    struct sc_aw_camera_sink *camera = container_of(sink, struct sc_aw_camera_sink, frame_sink);
++    @autoreleasepool {
++        JHCameraWriter *writer = (__bridge JHCameraWriter *)camera->context;
++        int result = [writer pushFrame:frame];
++        if (writer.started && clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - atomic_load(&last_accepted) > 5 * NSEC_PER_SEC) result = -1;
++        return result < 0 ? SC_SINK_KO : SC_SINK_OK;
++    }
++}
++bool sc_aw_camera_sink_init(struct sc_aw_camera_sink *camera) {
++    memset(camera, 0, sizeof(*camera));
++    static const struct sc_frame_sink_ops ops = {.open = camera_open, .close = camera_close, .push = camera_push};
++    camera->frame_sink.ops = &ops; return true;
++}
++void sc_aw_camera_sink_destroy(struct sc_aw_camera_sink *camera) { camera_close(&camera->frame_sink); }
+--- /dev/null
++++ b/app/src/aw_preview.c
+@@ -0,0 +1,169 @@
++// SPDX-License-Identifier: Apache-2.0
++#include "aw_preview.h"
++
++#include <fcntl.h>
++#include <stdatomic.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <libavutil/hwcontext.h>
++#include <libavutil/pixfmt.h>
++#include <libavutil/time.h>
++
++#include "util/log.h"
++
++#define DOWNCAST(SINK) container_of(SINK, struct sc_aw_preview, frame_sink)
++#define FRAME_INTERVAL_US 80000 // ~12 fps is plenty for a preview
++
++static atomic_bool enabled;
++
++void
++sc_aw_preview_set_enabled(bool value) {
++    atomic_store(&enabled, value);
++}
++
++static inline uint8_t
++clamp_u8(int value) {
++    return value < 0 ? 0 : value > 255 ? 255 : (uint8_t) value;
++}
++
++static bool
++sc_aw_preview_frame_sink_open(struct sc_frame_sink *sink, const AVCodecContext *ctx,
++                              const struct sc_stream_session *session) {
++    (void) sink; (void) ctx; (void) session;
++    return true;
++}
++
++static void
++sc_aw_preview_frame_sink_close(struct sc_frame_sink *sink) {
++    (void) sink;
++}
++
++static enum sc_sink_result
++sc_aw_preview_frame_sink_push(struct sc_frame_sink *sink, const AVFrame *frame) {
++    struct sc_aw_preview *preview = DOWNCAST(sink);
++    if (!atomic_load(&enabled) || !preview->map) {
++        return SC_SINK_OK;
++    }
++    int64_t now = av_gettime_relative();
++    if (now - preview->last_frame_us < FRAME_INTERVAL_US) {
++        return SC_SINK_OK;
++    }
++    preview->last_frame_us = now;
++
++    const AVFrame *src = frame;
++    if (frame->hw_frames_ctx) {
++        // Hardware (VideoToolbox) frames are downloaded only at preview rate.
++        av_frame_unref(preview->software);
++        if (av_hwframe_transfer_data(preview->software, frame, 0) < 0) {
++            return SC_SINK_OK;
++        }
++        src = preview->software;
++    }
++    bool nv12 = src->format == AV_PIX_FMT_NV12;
++    bool planar = src->format == AV_PIX_FMT_YUV420P || src->format == AV_PIX_FMT_YUVJ420P;
++    if ((!nv12 && !planar) || src->width <= 0 || src->height <= 0) {
++        return SC_SINK_OK;
++    }
++
++    int w = src->width, h = src->height;
++    double scale = (double) SC_AW_PREVIEW_MAX_WIDTH / w;
++    if ((double) SC_AW_PREVIEW_MAX_HEIGHT / h < scale) {
++        scale = (double) SC_AW_PREVIEW_MAX_HEIGHT / h;
++    }
++    if (scale > 1) {
++        scale = 1;
++    }
++    uint32_t ow = (uint32_t) (w * scale), oh = (uint32_t) (h * scale);
++    if (!ow || !oh) {
++        return SC_SINK_OK;
++    }
++    uint32_t stride = ow * 4;
++
++    _Atomic uint64_t *seq = (_Atomic uint64_t *) (preview->map + 8);
++    atomic_fetch_add_explicit(seq, 1, memory_order_acq_rel); // odd: writing
++    uint8_t *out = preview->map + SC_AW_PREVIEW_HEADER;
++    for (uint32_t y = 0; y < oh; ++y) {
++        int sy = (int) ((int64_t) y * h / oh);
++        int sy2 = sy + 1 < h ? sy + 1 : sy;
++        const uint8_t *row = src->data[0] + (ptrdiff_t) sy * src->linesize[0];
++        const uint8_t *row2 = src->data[0] + (ptrdiff_t) sy2 * src->linesize[0];
++        int cy = sy / 2;
++        uint8_t *dst = out + (size_t) y * stride;
++        for (uint32_t x = 0; x < ow; ++x) {
++            int sx = (int) ((int64_t) x * w / ow);
++            int sx2 = sx + 1 < w ? sx + 1 : sx;
++            // A 2x2 luma average softens aliasing on downscaled text.
++            int luma = (row[sx] + row[sx2] + row2[sx] + row2[sx2] + 2) / 4;
++            int cx = sx / 2, u, v;
++            if (nv12) {
++                const uint8_t *uv = src->data[1] + (ptrdiff_t) cy * src->linesize[1] + cx * 2;
++                u = uv[0]; v = uv[1];
++            } else {
++                u = src->data[1][(ptrdiff_t) cy * src->linesize[1] + cx];
++                v = src->data[2][(ptrdiff_t) cy * src->linesize[2] + cx];
++            }
++            // BT.709 limited range → RGB (fixed point, 8 fractional bits)
++            int c = 298 * (luma - 16), d = u - 128, e = v - 128;
++            dst[4 * x + 0] = clamp_u8((c + 541 * d + 128) >> 8);           // B
++            dst[4 * x + 1] = clamp_u8((c - 55 * d - 136 * e + 128) >> 8);  // G
++            dst[4 * x + 2] = clamp_u8((c + 459 * e + 128) >> 8);           // R
++            dst[4 * x + 3] = 255;
++        }
++    }
++    memcpy(preview->map + 16, &ow, 4);
++    memcpy(preview->map + 20, &oh, 4);
++    memcpy(preview->map + 24, &stride, 4);
++    atomic_fetch_add_explicit(seq, 1, memory_order_acq_rel); // even: complete
++    return SC_SINK_OK;
++}
++
++bool
++sc_aw_preview_init(struct sc_aw_preview *preview) {
++    memset(preview, 0, sizeof(*preview));
++    const char *path = getenv("AW_PREVIEW_PATH");
++    if (!path || !*path) {
++        return false;
++    }
++    preview->map_size = SC_AW_PREVIEW_HEADER
++        + (size_t) SC_AW_PREVIEW_MAX_WIDTH * SC_AW_PREVIEW_MAX_HEIGHT * 4;
++    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
++    if (fd < 0 || ftruncate(fd, (off_t) preview->map_size) < 0) {
++        if (fd >= 0) {
++            close(fd);
++        }
++        LOGW("Preview unavailable");
++        return false;
++    }
++    void *map = mmap(NULL, preview->map_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++    close(fd);
++    if (map == MAP_FAILED) {
++        LOGW("Preview unavailable");
++        return false;
++    }
++    preview->map = map;
++    memcpy(preview->map, "AWP1", 4);
++    preview->software = av_frame_alloc();
++    if (!preview->software) {
++        munmap(preview->map, preview->map_size);
++        preview->map = NULL;
++        return false;
++    }
++    static const struct sc_frame_sink_ops ops = {
++        .open = sc_aw_preview_frame_sink_open,
++        .close = sc_aw_preview_frame_sink_close,
++        .push = sc_aw_preview_frame_sink_push,
++    };
++    preview->frame_sink.ops = &ops;
++    return true;
++}
++
++void
++sc_aw_preview_destroy(struct sc_aw_preview *preview) {
++    if (preview->map) {
++        munmap(preview->map, preview->map_size);
++        preview->map = NULL;
++    }
++    av_frame_free(&preview->software);
++}
+--- /dev/null
++++ b/app/src/aw_preview.h
+@@ -0,0 +1,45 @@
++// SPDX-License-Identifier: Apache-2.0
++// JH Mirror: small live preview for the macOS menu-bar popover.
++#ifndef SC_AW_PREVIEW_H
++#define SC_AW_PREVIEW_H
++
++#include "common.h"
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <libavutil/frame.h>
++
++#include "trait/frame_sink.h"
++
++/*
++ * Shared file layout (little endian):
++ *   0  "AWP1"
++ *   8  uint64 sequence (odd while a frame is being written)
++ *  16  uint32 width, 20 uint32 height, 24 uint32 stride (bytes)
++ *  64  BGRA pixels
++ */
++#define SC_AW_PREVIEW_MAX_WIDTH 360
++#define SC_AW_PREVIEW_MAX_HEIGHT 800
++#define SC_AW_PREVIEW_HEADER 64
++
++struct sc_aw_preview {
++    struct sc_frame_sink frame_sink; // frame sink trait
++    uint8_t *map;
++    size_t map_size;
++    AVFrame *software;
++    int64_t last_frame_us;
++};
++
++// Uses $AW_PREVIEW_PATH; returns false (and does nothing) when unset or unavailable.
++bool
++sc_aw_preview_init(struct sc_aw_preview *preview);
++
++void
++sc_aw_preview_destroy(struct sc_aw_preview *preview);
++
++// Frames are converted only while enabled (the popover is visible).
++void
++sc_aw_preview_set_enabled(bool enabled);
++
++#endif
+--- a/app/src/cli.c
++++ b/app/src/cli.c
+@@ -3040,6 +3040,13 @@
+ 
+     bool otg = false;
+     bool v4l2 = false;
++    bool camera_sink = false;
++#ifdef __APPLE__
++    // This headless consumer still needs video. --no-window must not discard it.
++    const char *camera_uid = getenv("JH_CAMERA_DEVICE_UID");
++    camera_sink = camera_uid && *camera_uid && opts->video
++        && opts->video_source == SC_VIDEO_SOURCE_CAMERA;
++#endif
+ #ifdef HAVE_USB
+     otg = opts->otg;
+ #endif
+@@ -3065,7 +3072,7 @@
+     }
+ 
+     if (opts->video && !opts->video_playback && !opts->record_filename
+-            && !v4l2) {
++            && !v4l2 && !camera_sink) {
+         LOGI("No video playback, no recording, no V4L2 sink: video disabled");
+         opts->video = false;
+     }
+--- a/app/src/control_msg.c
++++ b/app/src/control_msg.c
+@@ -202,6 +202,8 @@
+         case SC_CONTROL_MSG_TYPE_RESET_VIDEO:
+         case SC_CONTROL_MSG_TYPE_CAMERA_ZOOM_IN:
+         case SC_CONTROL_MSG_TYPE_CAMERA_ZOOM_OUT:
++        case SC_CONTROL_MSG_TYPE_JH_KEEP_ACTIVE:
++        case SC_CONTROL_MSG_TYPE_JH_RELEASE_DISPLAY:
+             // no additional data
+             return 1;
+         default:
+@@ -336,6 +338,12 @@
+         case SC_CONTROL_MSG_TYPE_RESET_VIDEO:
+             LOG_CMSG("reset video");
+             break;
++        case SC_CONTROL_MSG_TYPE_JH_KEEP_ACTIVE:
++            LOG_CMSG("mirror activity pulse");
++            break;
++        case SC_CONTROL_MSG_TYPE_JH_RELEASE_DISPLAY:
++            LOG_CMSG("phone display intent released");
++            break;
+         case SC_CONTROL_MSG_TYPE_CAMERA_SET_TORCH:
+             LOG_CMSG("camera set torch %s",
+                      msg->camera_set_torch.on ? "on" : "off");
+--- a/app/src/control_msg.h
++++ b/app/src/control_msg.h
+@@ -50,6 +50,9 @@
+     SC_CONTROL_MSG_TYPE_CAMERA_ZOOM_OUT,
+     SC_CONTROL_MSG_TYPE_RESIZE_DISPLAY,
+     SC_CONTROL_MSG_TYPE_SCAN_FILE,
++    // JH Mirror: a single activity pulse, never a key event or unlock request.
++    SC_CONTROL_MSG_TYPE_JH_KEEP_ACTIVE = 200,
++    SC_CONTROL_MSG_TYPE_JH_RELEASE_DISPLAY = 201,
+ };
+ 
+ enum sc_copy_key {
+--- a/app/src/events.h
++++ b/app/src/events.h
+@@ -22,6 +22,12 @@
      SC_EVENT_AOA_OPEN_ERROR,
      SC_EVENT_DISCONNECTED_ICON_LOADED,
      SC_EVENT_DISCONNECTED_TIMEOUT,
 +    SC_EVENT_TOOL_CLIPBOARD_GET,
 +    SC_EVENT_TOOL_CLIPBOARD_SET,
++    SC_EVENT_TOOL_DISPLAY_OFF,
++    SC_EVENT_TOOL_DISPLAY_ON,
++    SC_EVENT_TOOL_KEEP_ACTIVE,
++    SC_EVENT_TOOL_RELEASE_DISPLAY,
  };
  
  bool
-diff -ruN a/app/src/input_manager.c b/app/src/input_manager.c
---- a/app/src/input_manager.c	2026-10-14 01:09:52
-+++ b/app/src/input_manager.c	2026-10-13 22:43:15
+--- a/app/src/input_manager.c
++++ b/app/src/input_manager.c
 @@ -13,6 +13,9 @@
  #include "shortcut_mod.h"
  #include "util/log.h"
@@ -49,7 +691,7 @@ diff -ruN a/app/src/input_manager.c b/app/src/input_manager.c
  }
  
  static void
-@@ -1167,6 +1173,14 @@
+@@ -1167,6 +1173,28 @@
  sc_input_manager_handle_event(struct sc_input_manager *im,
                                const SDL_Event *event) {
      switch (event->type) {
@@ -61,12 +703,25 @@ diff -ruN a/app/src/input_manager.c b/app/src/input_manager.c
 +            if (im->controller && im->kp && !im->camera && !im->disconnected)
 +                set_device_clipboard(im, false, SC_SEQUENCE_INVALID);
 +            break;
++        case SC_EVENT_TOOL_DISPLAY_OFF:
++        case SC_EVENT_TOOL_DISPLAY_ON:
++            // JH Mirror: phone display dark (or back on) while mirroring continues.
++            if (im->controller && !im->camera && !im->disconnected)
++                set_display_power(im, event->type == SC_EVENT_TOOL_DISPLAY_ON);
++            break;
++        case SC_EVENT_TOOL_KEEP_ACTIVE:
++        case SC_EVENT_TOOL_RELEASE_DISPLAY:
++            if (im->controller && !im->camera && !im->disconnected) {
++                struct sc_control_msg msg = {.type = event->type == SC_EVENT_TOOL_KEEP_ACTIVE
++                    ? SC_CONTROL_MSG_TYPE_JH_KEEP_ACTIVE : SC_CONTROL_MSG_TYPE_JH_RELEASE_DISPLAY};
++                sc_controller_push_msg(im->controller, &msg);
++            }
++            break;
          case SDL_EVENT_TEXT_INPUT:
              sc_input_manager_process_text_input(im, &event->text);
              break;
-diff -ruN a/app/src/macos_window.h b/app/src/macos_window.h
---- a/app/src/macos_window.h	1970-01-01 06:00:00
-+++ b/app/src/macos_window.h	2026-10-14 00:25:44
+--- /dev/null
++++ b/app/src/macos_window.h
 @@ -0,0 +1,8 @@
 +// SPDX-License-Identifier: Apache-2.0
 +#ifndef SC_MACOS_WINDOW_H
@@ -76,12 +731,12 @@ diff -ruN a/app/src/macos_window.h b/app/src/macos_window.h
 +void sc_macos_window_ready(SDL_Window *);
 +void sc_macos_window_cleanup(void);
 +#endif
-diff -ruN a/app/src/macos_window.m b/app/src/macos_window.m
---- a/app/src/macos_window.m	1970-01-01 06:00:00
-+++ b/app/src/macos_window.m	2026-10-14 01:09:43
-@@ -0,0 +1,173 @@
+--- /dev/null
++++ b/app/src/macos_window.m
+@@ -0,0 +1,237 @@
 +// SPDX-License-Identifier: Apache-2.0
 +#import <Cocoa/Cocoa.h>
++#import <QuartzCore/QuartzCore.h>
 +#include <stdio.h>
 +#include <string.h>
 +#include <termios.h>
@@ -90,6 +745,7 @@ diff -ruN a/app/src/macos_window.m b/app/src/macos_window.m
 +#undef MIN
 +#undef MAX
 +#include "events.h"
++#include "aw_preview.h"
 +
 +static id drag_monitor;
 +static id quit_key_monitor;
@@ -103,6 +759,39 @@ diff -ruN a/app/src/macos_window.m b/app/src/macos_window.m
 +static SDL_Window *phone_sdl_window;
 +static NSWindow *phone_window;
 +static NSView *window_controls;
++static NSButton *tools_dot;
++
++@interface AWToolsDot : NSButton
++- (void)toggleTools:(id)sender;
++- (void)setToolsVisible:(BOOL)visible;
++@end
++@implementation AWToolsDot
++- (instancetype)initWithFrame:(NSRect)frame {
++    if ((self = [super initWithFrame:frame])) {
++        self.bordered = NO; self.title = @""; self.target = self;
++        self.action = @selector(toggleTools:);
++        [self setToolsVisible:NO];
++    }
++    return self;
++}
++- (void)drawRect:(NSRect)rect {
++    (void)rect;
++    NSBezierPath *arrow = [NSBezierPath bezierPath]; arrow.lineWidth = 1.7;
++    arrow.lineCapStyle = NSLineCapStyleRound; arrow.lineJoinStyle = NSLineJoinStyleRound;
++    BOOL expanded = self.state == NSControlStateValueOn;
++    [arrow moveToPoint:NSMakePoint(expanded ? 16 : 11, 9)];
++    [arrow lineToPoint:NSMakePoint(expanded ? 12 : 15, 13)];
++    [arrow lineToPoint:NSMakePoint(expanded ? 16 : 11, 17)];
++    [[NSColor.whiteColor colorWithAlphaComponent:self.highlighted ? 0.65 : 0.94] setStroke]; [arrow stroke];
++}
++- (void)toggleTools:(id)sender { (void)sender; puts("AW_TOOLS_TOGGLE"); fflush(stdout); }
++- (void)setToolsVisible:(BOOL)visible {
++    self.state = visible ? NSControlStateValueOn : NSControlStateValueOff;
++    self.toolTip = visible ? @"Collapse Phone Tools" : @"Expand Phone Tools";
++    [self setAccessibilityLabel:self.toolTip];
++    self.needsDisplay = YES;
++}
++@end
 +
 +@interface AWWindowDot : NSButton
 +@end
@@ -148,7 +837,7 @@ diff -ruN a/app/src/macos_window.m b/app/src/macos_window.m
 +}
 +
 +void sc_macos_window_setup(SDL_Window *sdl_window) {
-+    NSWindow *window = (NSWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(sdl_window),
++    NSWindow *window = (__bridge NSWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(sdl_window),
 +        SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
 +    if (!window || phone_window == window) return;
 +    phone_window = window;
@@ -177,11 +866,19 @@ diff -ruN a/app/src/macos_window.m b/app/src/macos_window.m
 +        }
 +        window_controls = controls;
 +        [window.contentView addSubview:controls];
++        if (getenv("AW_PHONE_TOOLS")) {
++            AWToolsDot *dot = [[AWToolsDot alloc] initWithFrame:
++                NSMakeRect(window.contentView.bounds.size.width - 34, window.contentView.bounds.size.height - 32, 28, 26)];
++            dot.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
++            [dot setToolsVisible:getenv("AW_TOOLS_VISIBLE") != NULL];
++            tools_dot = dot; [window.contentView addSubview:dot];
++        }
 +        drag_monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown
 +            handler:^NSEvent *(NSEvent *event) {
 +                if (event.window != window) return event;
 +                NSPoint point = [window.contentView convertPoint:event.locationInWindow fromView:nil];
 +                if (window_controls && NSPointInRect(point, window_controls.frame)) return event;
++                if (tools_dot && NSPointInRect(point, tools_dot.frame)) return event;
 +                NSSize size = window.contentView.bounds.size;
 +                BOOL border = point.x < 6 || point.y < 6 || point.x >= size.width - 6 || point.y >= size.height - 6;
 +                if (border || (event.modifierFlags & NSEventModifierFlagOption)) {
@@ -194,7 +891,13 @@ diff -ruN a/app/src/macos_window.m b/app/src/macos_window.m
 +    if (!getenv("AW_PHONE_TOOLS")) return;
 +    quit_key_monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event) {
 +        NSEventModifierFlags mods = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-+        if (mods == NSEventModifierFlagCommand && [event.charactersIgnoringModifiers isEqualToString:@"q"]) announce_user_close();
++        // The helper runs without a menu bar (no second Dock app), so ⌘Q and ⌘W close the phone window here.
++        if (event.window == phone_window && mods == NSEventModifierFlagCommand
++                && ([event.charactersIgnoringModifiers isEqualToString:@"q"] || [event.charactersIgnoringModifiers isEqualToString:@"w"])) {
++            announce_user_close();
++            sc_push_event(SDL_EVENT_QUIT);
++            return nil;
++        }
 +        return event;
 +    }];
 +    observers = [[NSMutableArray alloc] init];
@@ -216,18 +919,32 @@ diff -ruN a/app/src/macos_window.m b/app/src/macos_window.m
 +    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
 +        char line[256];
 +        while (fgets(line, sizeof(line), stdin)) {
-+            if (!strcmp(line, "AW_COMMAND:get-clipboard\n")) sc_push_event(SC_EVENT_TOOL_CLIPBOARD_GET);
++            if (!strcmp(line, "AW_COMMAND:preview-on\n")) sc_aw_preview_set_enabled(true);
++            else if (!strcmp(line, "AW_COMMAND:preview-off\n")) sc_aw_preview_set_enabled(false);
++            else if (!strcmp(line, "AW_COMMAND:display-off\n")) sc_push_event(SC_EVENT_TOOL_DISPLAY_OFF);
++            else if (!strcmp(line, "AW_COMMAND:display-on\n")) sc_push_event(SC_EVENT_TOOL_DISPLAY_ON);
++            else if (!strcmp(line, "AW_COMMAND:keep-active\n")) sc_push_event(SC_EVENT_TOOL_KEEP_ACTIVE);
++            else if (!strcmp(line, "AW_COMMAND:screen-on-ack\n")) sc_push_event(SC_EVENT_TOOL_RELEASE_DISPLAY);
++            else if (!strcmp(line, "AW_COMMAND:tools-visible\n") || !strcmp(line, "AW_COMMAND:tools-hidden\n")) {
++                BOOL visible = !strcmp(line, "AW_COMMAND:tools-visible\n");
++                dispatch_async(dispatch_get_main_queue(), ^{ [(AWToolsDot *)tools_dot setToolsVisible:visible]; });
++            }
++            else if (!strcmp(line, "AW_COMMAND:get-clipboard\n")) sc_push_event(SC_EVENT_TOOL_CLIPBOARD_GET);
 +            else if (!strcmp(line, "AW_COMMAND:set-clipboard\n")) sc_push_event(SC_EVENT_TOOL_CLIPBOARD_SET);
-+            else if (!strcmp(line, "AW_COMMAND:hide\n") || !strcmp(line, "AW_COMMAND:show\n")) {
++            else if (!strcmp(line, "AW_COMMAND:hide\n") || !strcmp(line, "AW_COMMAND:show\n") || !strcmp(line, "AW_COMMAND:minimize\n")) {
 +                bool hide = !strcmp(line, "AW_COMMAND:hide\n");
++                bool minimize = !strcmp(line, "AW_COMMAND:minimize\n");
 +                dispatch_async(dispatch_get_main_queue(), ^{
 +                    if (!phone_sdl_window) return;
-+                    if (hide) SDL_HideWindow(phone_sdl_window);
++                    if (minimize) SDL_MinimizeWindow(phone_sdl_window);
++                    else if (hide) SDL_HideWindow(phone_sdl_window);
 +                    else { SDL_RestoreWindow(phone_sdl_window); SDL_ShowWindow(phone_sdl_window); SDL_RaiseWindow(phone_sdl_window); }
 +                    report_frame();
 +                });
 +            }
 +        }
++        // Parent crash/exit closes its private pipe: do not leave an orphan mirror.
++        sc_push_event(SDL_EVENT_QUIT);
 +    });
 +}
 +void sc_macos_window_ready(SDL_Window *window) {
@@ -250,12 +967,12 @@ diff -ruN a/app/src/macos_window.m b/app/src/macos_window.m
 +    [window_controls release];
 +#endif
 +    window_controls = nil;
++    [tools_dot removeFromSuperview]; tools_dot = nil;
 +    phone_window = nil;
 +    phone_sdl_window = NULL;
 +}
-diff -ruN a/app/src/main.c b/app/src/main.c
---- a/app/src/main.c	2026-10-14 01:09:52
-+++ b/app/src/main.c	2026-10-14 00:25:44
+--- a/app/src/main.c
++++ b/app/src/main.c
 @@ -2,6 +2,7 @@
  
  #include <stdbool.h>
@@ -278,28 +995,160 @@ diff -ruN a/app/src/main.c b/app/src/main.c
  #ifdef _WIN32
      // disable buffering, we want logs immediately
      // even line buffering (setvbuf() with mode _IOLBF) is not sufficient
-diff -ruN a/app/src/screen.c b/app/src/screen.c
---- a/app/src/screen.c	2026-10-14 01:09:52
-+++ b/app/src/screen.c	2026-10-14 00:25:44
-@@ -1,4 +1,7 @@
+--- a/app/src/recorder.c
++++ b/app/src/recorder.c
+@@ -112,7 +112,9 @@
+     } else {
+         st->last_pts = packet->pts;
+     }
+-    return av_interleaved_write_frame(recorder->ctx, packet) >= 0;
++    bool ok = av_interleaved_write_frame(recorder->ctx, packet) >= 0;
++    if (getenv("AW_CALL_STREAM")) { avio_flush(recorder->ctx->pb); }
++    return ok;
+ }
+ 
+ static inline bool
+@@ -256,7 +258,16 @@
+         }
+     }
+ 
+-    bool ok = avformat_write_header(recorder->ctx, NULL) >= 0;
++    AVDictionary *mux_options = NULL;
++    if (getenv("AW_CALL_STREAM")) {
++        // Matroska over a private FIFO: bounded latency, no recording stored on disk.
++        av_dict_set(&mux_options, "live", "1", 0);
++        av_dict_set(&mux_options, "cluster_time_limit", "100", 0);
++        recorder->ctx->flags |= AVFMT_FLAG_FLUSH_PACKETS;
++    }
++    bool ok = avformat_write_header(recorder->ctx, &mux_options) >= 0;
++    av_dict_free(&mux_options);
++    if (getenv("AW_CALL_STREAM")) { avio_flush(recorder->ctx->pb); }
+     if (!ok) {
+         LOGE("Failed to write header to %s", recorder->filename);
+         goto end;
+--- a/app/src/scrcpy.c
++++ b/app/src/scrcpy.c
+@@ -48,6 +48,10 @@
+ # include "v4l2_sink.h"
+ #endif
+ #include "video_regulator.h"
++#ifdef __APPLE__
++# include "aw_preview.h"
++# include "aw_camera_sink.h"
++#endif
+ 
+ #define SC_BACKPRESSURE_THRESHOLD 8 // in-flight frames in video regulator
+ 
+@@ -62,6 +66,10 @@
+     struct sc_hwdec hwdec;
+     struct sc_recorder recorder;
+     struct sc_video_regulator video_regulator;
++#ifdef __APPLE__
++    struct sc_aw_preview aw_preview;
++    struct sc_aw_camera_sink camera_sink;
++#endif
+ #ifdef HAVE_V4L2
+     struct sc_v4l2_sink v4l2_sink;
+     struct sc_video_regulator v4l2_regulator;
+@@ -401,6 +409,12 @@
+     bool v4l2_regulator_initialized = false;
+ #endif
+     bool video_regulator_initialized = false;
++#ifdef __APPLE__
++    bool aw_preview_initialized = false;
++    bool camera_sink_initialized = false;
++    bool camera_sink_requested = getenv("JH_CAMERA_DEVICE_UID") && options->video
++        && options->video_source == SC_VIDEO_SOURCE_CAMERA;
++#endif
+     bool video_demuxer_started = false;
+     bool audio_demuxer_started = false;
+     bool hwdec_initialized = false;
+@@ -474,6 +488,7 @@
+         .tcpip_dst = options->tcpip_dst,
+         .cleanup = options->cleanup,
+         .power_on = options->power_on,
++        .persist_screen_off = getenv("AW_PERSIST_SCREEN_OFF") != NULL,
+         .kill_adb_on_close = options->kill_adb_on_close,
+         .camera_high_speed = options->camera_high_speed,
+         .camera_torch = options->camera_torch,
+@@ -850,6 +865,9 @@
+     }
+ 
+     bool needs_video_decoder = options->video_playback;
++#ifdef __APPLE__
++    needs_video_decoder |= camera_sink_requested;
++#endif
+     bool needs_audio_decoder = options->audio_playback;
+ #ifdef HAVE_V4L2
+     needs_video_decoder |= !!options->v4l2_device;
+@@ -897,10 +915,24 @@
+         audio_decoder_started = true;
+     }
+ 
++#ifdef __APPLE__
++    if (camera_sink_requested) {
++        sc_aw_camera_sink_init(&s->camera_sink);
++        camera_sink_initialized = true;
++        sc_frame_source_add_sink(&s->video_decoder.frame_source, &s->camera_sink.frame_sink);
++    }
++#endif
++
+     if (options->video_playback) {
+         assert(options->window);
+         assert(screen_initialized);
+         struct sc_frame_source *src = &s->video_decoder.frame_source;
++#ifdef __APPLE__
++        if (sc_aw_preview_init(&s->aw_preview)) {
++            aw_preview_initialized = true;
++            sc_frame_source_add_sink(src, &s->aw_preview.frame_sink);
++        }
++#endif
+         if (options->video_buffer) {
+             uint32_t backpressure_threshold = SC_BACKPRESSURE_THRESHOLD;
+ #ifdef HAVE_V4L2
+@@ -1128,6 +1160,12 @@
+     if (video_regulator_initialized) {
+         sc_video_regulator_destroy(&s->video_regulator);
+     }
++#ifdef __APPLE__
++    if (aw_preview_initialized) {
++        sc_aw_preview_destroy(&s->aw_preview);
++    }
++    if (camera_sink_initialized) { sc_aw_camera_sink_destroy(&s->camera_sink); }
++#endif
+ 
+ #ifdef HAVE_V4L2
+     if (v4l2_regulator_initialized) {
+--- a/app/src/screen.c
++++ b/app/src/screen.c
+@@ -1,6 +1,10 @@
  #include "screen.h"
 +#ifdef __APPLE__
 +#include "macos_window.h"
 +#endif
  
  #include <assert.h>
++#include <stdlib.h>
  #include <string.h>
-@@ -807,6 +810,9 @@
+ #include <SDL3/SDL.h>
+ 
+@@ -806,7 +810,15 @@
+     }
  
      screen->window_shown = true;
-     sc_sdl_show_window(screen->window);
 +#ifdef __APPLE__
++    // JH Mirror can start the session for the menu-bar preview without showing the window.
++    if (!getenv("AW_START_HIDDEN")) {
++        sc_sdl_show_window(screen->window);
++    }
 +    sc_macos_window_ready(screen->window);
++#else
+     sc_sdl_show_window(screen->window);
 +#endif
      sc_screen_update_content_rect(screen);
  }
  
-@@ -838,6 +844,9 @@
+@@ -838,6 +850,9 @@
  
  void
  sc_screen_destroy(struct sc_screen *screen) {
@@ -309,9 +1158,30 @@ diff -ruN a/app/src/screen.c b/app/src/screen.c
  #ifndef NDEBUG
      assert(!screen->open);
  #endif
-diff -ruN a/server/build_without_gradle.sh b/server/build_without_gradle.sh
---- a/server/build_without_gradle.sh	2026-10-14 01:09:52
-+++ b/server/build_without_gradle.sh	2026-10-14 00:21:08
+--- a/app/src/server.c
++++ b/app/src/server.c
+@@ -417,6 +417,9 @@
+         // By default, power_on is true
+         ADD_PARAM("power_on=false");
+     }
++    if (params->persist_screen_off) {
++        ADD_PARAM("jh_persist_screen_off=true");
++    }
+     if (params->new_display) {
+         VALIDATE_STRING(params->new_display);
+         ADD_PARAM("new_display=%s", params->new_display);
+--- a/app/src/server.h
++++ b/app/src/server.h
+@@ -68,6 +68,7 @@
+     bool select_tcpip;
+     bool cleanup;
+     bool power_on;
++    bool persist_screen_off;
+     bool kill_adb_on_close;
+     bool camera_high_speed;
+     bool camera_torch;
+--- a/server/build_without_gradle.sh
++++ b/server/build_without_gradle.sh
 @@ -19,7 +19,7 @@
  PLATFORM_TOOLS="$ANDROID_HOME/platforms/android-$PLATFORM"
  BUILD_TOOLS_DIR="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
@@ -352,3 +1222,753 @@ diff -ruN a/server/build_without_gradle.sh b/server/build_without_gradle.sh
  
      cd "$BUILD_DIR"
      mv classes.zip "$SERVER_BINARY"
+--- a/server/src/main/java/com/genymobile/scrcpy/CleanUp.java
++++ b/server/src/main/java/com/genymobile/scrcpy/CleanUp.java
+@@ -14,6 +14,9 @@
+ import java.io.File;
+ import java.io.IOException;
+ import java.io.OutputStream;
++import java.io.ByteArrayOutputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.concurrent.TimeUnit;
+ 
+ /**
+  * Handle the cleanup of scrcpy, even if the main process is killed.
+@@ -25,7 +28,7 @@
+     // Dynamic options
+     private static final int PENDING_CHANGE_DISPLAY_POWER = 1 << 0;
+     private int pendingChanges;
+-    private boolean pendingRestoreDisplayPower;
++    private int pendingDisplayExitState; // 0 unchanged, 1 restore, 2 remain black and sleep
+ 
+     private Thread thread;
+     private boolean interrupted;
+@@ -143,7 +146,7 @@
+ 
+         while (true) {
+             int localPendingChanges;
+-            boolean localPendingRestoreDisplayPower;
++            int localPendingDisplayExitState;
+             synchronized (this) {
+                 while (!interrupted && pendingChanges == 0) {
+                     try {
+@@ -152,22 +155,27 @@
+                         throw new AssertionError("Clean up thread MUST NOT be interrupted");
+                     }
+                 }
+-                if (interrupted) {
++                if (interrupted && pendingChanges == 0) {
+                     break;
+                 }
+                 localPendingChanges = pendingChanges;
+-                localPendingRestoreDisplayPower = pendingRestoreDisplayPower;
++                localPendingDisplayExitState = pendingDisplayExitState;
+                 pendingChanges = 0;
+             }
+             if ((localPendingChanges & PENDING_CHANGE_DISPLAY_POWER) != 0) {
+-                out.write(localPendingRestoreDisplayPower ? 1 : 0);
++                out.write(localPendingDisplayExitState);
+                 out.flush();
+             }
+         }
+     }
+ 
+     public synchronized void setRestoreDisplayPower(boolean restoreDisplayPower) {
+-        pendingRestoreDisplayPower = restoreDisplayPower;
++        pendingDisplayExitState = restoreDisplayPower ? 1 : 0;
++        pendingChanges |= PENDING_CHANGE_DISPLAY_POWER;
++        notify();
++    }
++    public synchronized void setKeepScreenOffOnExit(boolean off) {
++        pendingDisplayExitState = off ? 2 : 0;
+         pendingChanges |= PENDING_CHANGE_DISPLAY_POWER;
+         notify();
+     }
+@@ -207,14 +215,16 @@
+ 
+         // Dynamic option
+         boolean restoreDisplayPower = false;
++        boolean keepScreenOff = false;
+ 
+         try {
+             // Wait for the server to die
+             int msg;
+             while ((msg = System.in.read()) != -1) {
+                 // Only restore display power
+-                assert msg == 0 || msg == 1;
+-                restoreDisplayPower = msg != 0;
++                assert msg >= 0 && msg <= 2;
++                restoreDisplayPower = msg == 1;
++                keepScreenOff = msg == 2;
+             }
+         } catch (IOException e) {
+             // Expected when the server is dead
+@@ -257,7 +267,7 @@
+         // Change the power of the main display when mirroring a virtual display
+         int targetDisplayId = displayId != Device.DISPLAY_ID_NONE ? displayId : 0;
+         if (Device.isScreenOn(targetDisplayId)) {
+-            if (powerOffScreen) {
++            if (powerOffScreen || (keepScreenOff && blackStillRequested())) {
+                 Ln.i("Power off screen");
+                 Device.powerOffScreen(targetDisplayId);
+             } else if (restoreDisplayPower) {
+@@ -268,4 +278,19 @@
+ 
+         System.exit(0);
+     }
++
++    private static boolean blackStillRequested() {
++        // A phone power-button wake or an explicit Mac Screen On action wins
++        // even when it races the old mirror's cleanup process.
++        try {
++            Process check = new ProcessBuilder("am", "broadcast", "--user", "current", "-n",
++                "com.johirulhoqakash.jhmirror/.SetupReceiver", "-a", "com.johirulhoqakash.jhmirror.TOUCH_GUARD",
++                "--es", "operation", "state").redirectErrorStream(true).start();
++            if (!check.waitFor(1500, TimeUnit.MILLISECONDS)) { check.destroy(); return true; }
++            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
++            byte[] buffer = new byte[256]; int count;
++            while ((count = check.getInputStream().read(buffer)) != -1 && bytes.size() < 4096) bytes.write(buffer, 0, count);
++            return !new String(bytes.toByteArray(), StandardCharsets.UTF_8).contains("data=\"screen-on\"");
++        } catch (Exception unavailable) { return true; }
++    }
+ }
+--- /dev/null
++++ b/server/src/main/java/com/genymobile/scrcpy/ClipboardWatcher.java
+@@ -0,0 +1,118 @@
++// SPDX-License-Identifier: Apache-2.0
++package com.genymobile.scrcpy;
++
++import android.content.ClipData;
++import android.content.ClipDescription;
++import android.content.ClipboardManager;
++import android.content.Context;
++import android.net.Uri;
++import android.os.Build;
++import android.os.Looper;
++import android.os.PersistableBundle;
++import android.util.Base64;
++
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++
++/**
++ * JH Mirror: reports phone clipboard changes to the Mac app.
++ *
++ * Started by the Mac over its authorized ADB connection as the shell user, which (unlike a
++ * normal app on Android 10+) may observe the clipboard in the background. One line per event:
++ *   AW_CLIP_READY
++ *   AW_CLIP_TEXT <base64 utf-8 text>
++ *   AW_CLIP_URI  <base64 mime> <base64 content uri>   (the Mac then reads it with `content read`)
++ *   AW_CLIP_SKIPPED <reason>
++ *   AW_CLIP_ERROR <message>
++ * Reading the clip as the shell package also grants the shell read access to its content URI.
++ * The process exits when the Mac closes its stdin.
++ */
++public final class ClipboardWatcher {
++    private static final int MAX_TEXT_CHARS = 1_000_000;
++    private static final String EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE";
++
++    private ClipboardWatcher() {
++        // not instantiable
++    }
++
++    public static void main(String... args) {
++        int status = 0;
++        try {
++            Looper.prepareMainLooper();
++            Workarounds.apply();
++            ClipboardManager clipboard = (ClipboardManager) FakeContext.get().getSystemService(Context.CLIPBOARD_SERVICE);
++            if (clipboard == null) {
++                emit("AW_CLIP_ERROR " + encode("No clipboard service"));
++                System.exit(2);
++            }
++            clipboard.addPrimaryClipChangedListener(() -> report(clipboard));
++            Thread stdin = new Thread(() -> {
++                try {
++                    while (System.in.read() != -1) {
++                        // Wait for the Mac side to close the pipe.
++                    }
++                } catch (IOException ignored) {
++                    // Treat as closed
++                }
++                System.exit(0);
++            }, "aw-clipboard-stdin");
++            stdin.setDaemon(true);
++            stdin.start();
++            emit("AW_CLIP_READY");
++            Looper.loop();
++        } catch (Throwable t) {
++            emit("AW_CLIP_ERROR " + encode(String.valueOf(t)));
++            status = 1;
++        } finally {
++            System.exit(status);
++        }
++    }
++
++    private static void report(ClipboardManager clipboard) {
++        try {
++            ClipData clip = clipboard.getPrimaryClip();
++            if (clip == null || clip.getItemCount() == 0) {
++                return;
++            }
++            ClipDescription description = clip.getDescription();
++            String mime = "";
++            if (description != null) {
++                if (description.getMimeTypeCount() > 0) {
++                    mime = description.getMimeType(0);
++                }
++                PersistableBundle extras = Build.VERSION.SDK_INT >= AndroidVersions.API_24_ANDROID_7_0 ? description.getExtras() : null;
++                if (extras != null && extras.getBoolean(EXTRA_IS_SENSITIVE, false)) {
++                    // Passwords and other content apps mark as sensitive never leave the phone.
++                    emit("AW_CLIP_SKIPPED sensitive");
++                    return;
++                }
++            }
++            ClipData.Item item = clip.getItemAt(0);
++            Uri uri = item.getUri();
++            if (uri != null && "content".equals(uri.getScheme())) {
++                emit("AW_CLIP_URI " + encode(mime) + " " + encode(uri.toString()));
++                return;
++            }
++            CharSequence text = item.getText();
++            if (text == null || text.length() == 0) {
++                return;
++            }
++            if (text.length() > MAX_TEXT_CHARS) {
++                emit("AW_CLIP_SKIPPED too-large");
++                return;
++            }
++            emit("AW_CLIP_TEXT " + encode(text.toString()));
++        } catch (Throwable t) {
++            emit("AW_CLIP_ERROR " + encode(String.valueOf(t)));
++        }
++    }
++
++    private static String encode(String value) {
++        return Base64.encodeToString(value.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP);
++    }
++
++    private static synchronized void emit(String line) {
++        System.out.println(line);
++        System.out.flush();
++    }
++}
+--- a/server/src/main/java/com/genymobile/scrcpy/Options.java
++++ b/server/src/main/java/com/genymobile/scrcpy/Options.java
+@@ -51,6 +51,7 @@
+     private boolean cameraTorch;
+     private boolean showTouches;
+     private boolean stayAwake;
++    private boolean persistScreenOff;
+     private int screenOffTimeout = -1;
+     private int displayImePolicy = -1;
+     private List<CodecOption> videoCodecOptions;
+@@ -202,6 +203,7 @@
+     public boolean getStayAwake() {
+         return stayAwake;
+     }
++    public boolean getPersistScreenOff() { return persistScreenOff; }
+ 
+     public int getScreenOffTimeout() {
+         return screenOffTimeout;
+@@ -431,6 +433,9 @@
+                 case "stay_awake":
+                     options.stayAwake = Boolean.parseBoolean(value);
+                     break;
++                case "jh_persist_screen_off":
++                    options.persistScreenOff = Boolean.parseBoolean(value);
++                    break;
+                 case "screen_off_timeout":
+                     options.screenOffTimeout = Integer.parseInt(value);
+                     if (options.screenOffTimeout < -1) {
+--- a/server/src/main/java/com/genymobile/scrcpy/control/ControlMessage.java
++++ b/server/src/main/java/com/genymobile/scrcpy/control/ControlMessage.java
+@@ -30,6 +30,8 @@
+     public static final int TYPE_CAMERA_ZOOM_OUT = 20;
+     public static final int TYPE_RESIZE_DISPLAY = 21;
+     public static final int TYPE_SCAN_FILE = 22;
++    public static final int TYPE_JH_KEEP_ACTIVE = 200;
++    public static final int TYPE_JH_RELEASE_DISPLAY = 201;
+ 
+     public static final long SEQUENCE_INVALID = 0;
+ 
+--- a/server/src/main/java/com/genymobile/scrcpy/control/ControlMessageReader.java
++++ b/server/src/main/java/com/genymobile/scrcpy/control/ControlMessageReader.java
+@@ -49,6 +49,8 @@
+             case ControlMessage.TYPE_RESET_VIDEO:
+             case ControlMessage.TYPE_CAMERA_ZOOM_IN:
+             case ControlMessage.TYPE_CAMERA_ZOOM_OUT:
++            case ControlMessage.TYPE_JH_KEEP_ACTIVE:
++            case ControlMessage.TYPE_JH_RELEASE_DISPLAY:
+                 return ControlMessage.createEmpty(type);
+             case ControlMessage.TYPE_UHID_CREATE:
+                 return parseUhidCreate();
+--- a/server/src/main/java/com/genymobile/scrcpy/control/Controller.java
++++ b/server/src/main/java/com/genymobile/scrcpy/control/Controller.java
+@@ -94,6 +94,7 @@
+     private final boolean clipboardAutosync;
+     private final boolean powerOn;
+     private final boolean keepActive;
++    private final boolean persistScreenOff;
+ 
+     private final KeyCharacterMap charMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
+ 
+@@ -116,6 +117,7 @@
+         this.camera = options.getVideoSource() == VideoSource.CAMERA;
+         this.controlChannel = controlChannel;
+         this.cleanUp = cleanUp;
++        this.persistScreenOff = options.getPersistScreenOff();
+ 
+         if (this.camera) {
+             // Unused for camera
+@@ -387,6 +389,22 @@
+                 case ControlMessage.TYPE_SET_DISPLAY_POWER:
+                     if (supportsInputEvents) {
+                         setDisplayPower(msg.getOn());
++                    }
++                    return true;
++                case ControlMessage.TYPE_JH_KEEP_ACTIVE:
++                    int activeDisplay = getActionDisplayId();
++                    // Extends inactivity only for an already-awake device. Never
++                    // wake it, dismiss keyguard or change timeout/security settings.
++                    if (activeDisplay != Device.DISPLAY_ID_NONE && Device.isScreenOn(activeDisplay)) {
++                        Device.keepActive(activeDisplay);
++                    }
++                    return true;
++                case ControlMessage.TYPE_JH_RELEASE_DISPLAY:
++                    // The phone was woken outside the mirror: acknowledge intent
++                    // without changing display power or injecting a wake event.
++                    if (persistScreenOff) {
++                        keepDisplayPowerOff = false;
++                        if (cleanUp != null) cleanUp.setKeepScreenOffOnExit(false);
+                     }
+                     return true;
+                 case ControlMessage.TYPE_ROTATE_DEVICE:
+@@ -857,14 +875,17 @@
+     private void setDisplayPower(boolean on) {
+         // Change the power of the main display when mirroring a virtual display
+         int targetDisplayId = displayId != Device.DISPLAY_ID_NONE ? displayId : 0;
++        if (persistScreenOff && on && !Device.isScreenOn(targetDisplayId)) {
++            Device.pressReleaseKeycode(KeyEvent.KEYCODE_WAKEUP, targetDisplayId, Device.INJECT_MODE_ASYNC);
++        }
+         boolean setDisplayPowerOk = Device.setDisplayPower(targetDisplayId, on);
+         if (setDisplayPowerOk) {
+             // Do not keep display power off for virtual displays: MOD+p must wake up the physical device
+             keepDisplayPowerOff = displayId != Device.DISPLAY_ID_NONE && !on;
+             Ln.i("Device display turned " + (on ? "on" : "off"));
+             if (cleanUp != null) {
+-                boolean mustRestoreOnExit = !on;
+-                cleanUp.setRestoreDisplayPower(mustRestoreOnExit);
++                if (persistScreenOff) cleanUp.setKeepScreenOffOnExit(!on);
++                else cleanUp.setRestoreDisplayPower(!on);
+             }
+         }
+     }
+--- /dev/null
++++ b/server/src/main/java/com/genymobile/scrcpy/JHFiles.java
+@@ -0,0 +1,390 @@
++package com.genymobile.scrcpy;
++
++import android.graphics.Bitmap;
++import android.graphics.BitmapFactory;
++import android.graphics.Matrix;
++import android.media.ExifInterface;
++import android.media.MediaMetadataRetriever;
++import android.content.ContentResolver;
++import android.content.Context;
++import android.content.IContentProvider;
++import android.database.Cursor;
++import android.os.Binder;
++import android.provider.MediaStore;
++import com.genymobile.scrcpy.wrappers.ServiceManager;
++import android.util.Base64;
++import org.json.JSONArray;
++import org.json.JSONObject;
++import java.io.*;
++import java.nio.charset.StandardCharsets;
++import java.nio.channels.FileLock;
++import java.security.MessageDigest;
++import java.util.*;
++
++/** One-shot commands under the already-authorized ADB shell. No socket, root or app-data access. */
++public final class JHFiles {
++    private final File root;
++    private final int user;
++    private JHFiles(int user) throws Exception {
++        if (user < 0 || user > 10000) throw new IOException("Invalid phone user");
++        this.user=user;
++        root = new File("/storage/emulated/" + user).getCanonicalFile();
++        if (!root.isDirectory() || !root.canRead()) throw new IOException("Phone shared storage is unavailable");
++    }
++    private static String decode(String value) { return value.equals("-") ? "" : new String(Base64.decode(value, Base64.NO_WRAP), StandardCharsets.UTF_8); }
++    private File file(String path) throws Exception {
++        if (path.startsWith("/") || path.indexOf('\0') >= 0) throw new IOException("Invalid path");
++        for (String part : path.split("/")) if (part.equals("..") || part.equals(".")) throw new IOException("Invalid path");
++        File value = new File(root, path).getCanonicalFile();
++        String relative = relative(value);
++        if (relative.equals("Android/data") || relative.startsWith("Android/data/") || relative.equals("Android/obb") || relative.startsWith("Android/obb/"))
++            throw new IOException("Android protects this app storage");
++        return value;
++    }
++    private String relative(File value) throws IOException {
++        String path=value.getPath(), base=root.getPath();
++        if (path.equals(base)) return "";
++        if (!path.startsWith(base + "/")) throw new IOException("Path leaves shared storage");
++        return path.substring(base.length()+1);
++    }
++    private static String name(String raw) throws IOException {
++        if (raw.isEmpty() || raw.equals(".") || raw.equals("..") || raw.contains("/") || raw.indexOf('\0')>=0 || raw.getBytes(StandardCharsets.UTF_8).length>240)
++            throw new IOException("Invalid file name");
++        return raw;
++    }
++    private static String kind(File value) {
++        if (value.isDirectory()) return "folder";
++        return kindName(value.getName());
++    }
++    private static String kindName(String name) {
++        String n=name.toLowerCase(Locale.ROOT);
++        if (n.matches(".*\\.(jpg|jpeg|png|webp|heic|heif|gif|bmp|avif|dng)$")) return "photo";
++        if (n.matches(".*\\.(mp4|m4v|mov|mkv|webm|3gp|avi|ts)$")) return "video";
++        if (n.matches(".*\\.(mp3|m4a|aac|wav|flac|ogg|opus|amr)$")) return "audio";
++        return "file";
++    }
++    private JSONObject info(File f) throws Exception {
++        if (!f.exists()) throw new IOException("File no longer exists");
++        return new JSONObject().put("path",relative(f)).put("name",f.getName()).put("directory",f.isDirectory())
++            .put("size",f.isDirectory()?0:f.length()).put("modified",f.lastModified()).put("kind",kind(f));
++    }
++    private File[] children(File folder) throws Exception {
++        if (!folder.isDirectory()) throw new IOException("Not a folder");
++        File[] children=folder.listFiles();
++        if (children==null) throw new IOException("Android does not allow reading this folder");
++        Arrays.sort(children, new Comparator<File>() { @Override public int compare(File a, File b) { return String.CASE_INSENSITIVE_ORDER.compare(a.getName(),b.getName()); } });
++        return children;
++    }
++    private boolean visible(File f) {
++        return !f.getName().startsWith(".") && !f.getName().startsWith(".jhmirror-");
++    }
++    private JSONObject list(File folder) throws Exception {
++        JSONArray result=new JSONArray(); boolean more=false;
++        for (File child:children(folder)) {
++            if (!visible(child)) continue;
++            try { child=file(relative(child)); } catch(Exception denied) { continue; }
++            if (result.length()>=20000) { more=true;break; }
++            try { result.put(info(child)); } catch(Exception disappeared) { /* Files can disappear while a folder is being read. */ }
++        }
++        return new JSONObject().put("path",relative(folder)).put("items",result).put("truncated",more);
++    }
++    private void walk(File directory, List<File> result, Set<String> seen, int depth, String media) throws Exception {
++        if (depth>40 || seen.size()>100000 || result.size()>=20000 || !seen.add(directory.getCanonicalPath())) return;
++        if (media!=null && new File(directory,".nomedia").exists()) return;
++        File[] values;
++        try { values=children(directory); } catch (Exception denied) { return; }
++        for (File child:values) {
++            if (child.getName().startsWith(".jhmirror-") || (media!=null && !visible(child))) continue;
++            try { child=file(relative(child)); } catch (Exception denied) { continue; }
++            if (child.isDirectory()) {
++                if (media==null) result.add(child);
++                walk(child,result,seen,depth+1,media);
++            } else if (media==null || kind(child).equals(media)) result.add(child);
++            if (result.size()>=20000) return;
++        }
++    }
++    private JSONObject tree(File directory, String media) throws Exception {
++        List<File> values=new ArrayList<>(); walk(directory,values,new HashSet<>(),0,media);
++        // The Mac sorts the returned metadata; avoid repeated FUSE stats inside a comparator.
++        JSONArray result=new JSONArray();for (File f:values) { try { result.put(info(f)); } catch(Exception disappeared) { /* Keep the readable entries. */ } }
++        return new JSONObject().put("path",relative(directory)).put("items",result).put("truncated",values.size()>=20000);
++    }
++    private JSONObject media(String kind) throws Exception { return media(kind,20000,true); }
++    private JSONObject media(String kind,int limit,boolean fallback) throws Exception {
++        // The existing provider wrapper addresses Android user 0 only. Other users safely use their own storage walk.
++        if(user!=0)return fallback?tree(root,kind):new JSONObject().put("path", "").put("items", new JSONArray()).put("truncated", true);
++        try {
++            if(android.os.Looper.getMainLooper()==null)android.os.Looper.prepareMainLooper();
++            Workarounds.apply();
++            final Binder token=new Binder();
++            final IContentProvider provider=ServiceManager.getActivityManager().getContentProviderExternal("media",token);
++            if(provider==null)throw new IOException("Media index unavailable");
++            ContentResolver resolver=new ContentResolver(FakeContext.get()) {
++                @SuppressWarnings("unused") protected IContentProvider acquireProvider(Context c,String name){return name.equals("media")?provider:null;}
++                @SuppressWarnings("unused") protected IContentProvider acquireUnstableProvider(Context c,String name){return name.equals("media")?provider:null;}
++                @SuppressWarnings("unused") public boolean releaseProvider(IContentProvider p){return true;}
++                @SuppressWarnings("unused") public boolean releaseUnstableProvider(IContentProvider p){return true;}
++                @SuppressWarnings("unused") public void unstableProviderDied(IContentProvider p){}
++            };
++            int type=kind.equals("photo")?1:kind.equals("video")?3:2;
++            JSONArray result=new JSONArray();Set<String> seen=new HashSet<>();boolean more=false;
++            String selection = JHMediaQuery.selection(android.os.Build.VERSION.SDK_INT);
++            try(Cursor cursor=resolver.query(MediaStore.Files.getContentUri("external"),new String[]{"_data","_size","date_modified"},
++                    selection,new String[]{String.valueOf(type)},"date_modified DESC, _id DESC")) {
++                if(cursor==null)throw new IOException("Media index unavailable");
++                while(cursor.moveToNext()) {
++                    String raw=cursor.getString(0);if(raw==null)continue;
++                    try {
++                        // Index rows are display snapshots. Exact canonical paths/size/mtime are resolved before preview, copy or delete.
++                        String base=root.getPath()+"/";if(!raw.startsWith(base))continue;
++                        String path=raw.substring(base.length());boolean hidden=false;
++                        for(String part:path.split("/"))if(part.startsWith(".") || part.isEmpty()) {hidden=true;break;}
++                        if(hidden || path.equals("Android/data") || path.startsWith("Android/data/") || path.equals("Android/obb") || path.startsWith("Android/obb/"))continue;
++                        File f=new File(raw);long size=cursor.getLong(1),seconds=cursor.getLong(2);
++                        if(size<0 || seconds<0 || seconds>253402300799L || !kindName(f.getName()).equals(kind) || !seen.add(path))continue;
++                        if(result.length()>=limit){more=true;break;}
++                        result.put(new JSONObject().put("path",path).put("name",f.getName()).put("directory",false)
++                            .put("size",size).put("modified",seconds*1000).put("kind",kind).put("indexed",true));
++                    } catch(Exception unavailable) { /* Removed/unreadable/private rows do not fail the whole gallery. */ }
++                }
++            }
++            return new JSONObject().put("path","").put("items",result).put("truncated",more).put("indexed",true);
++        } catch(Exception unavailable) {
++            return fallback?tree(root,kind):new JSONObject().put("path", "").put("items", new JSONArray()).put("truncated", true);
++        }
++    }
++    private static String hash(File f) throws Exception {
++        MessageDigest hash=MessageDigest.getInstance("SHA-256");byte[] bytes=new byte[1024*1024];
++        try (InputStream input=new FileInputStream(f)) { int n;while ((n=input.read(bytes))!=-1) hash.update(bytes,0,n); }
++        StringBuilder text=new StringBuilder();for (byte b:hash.digest()) text.append(String.format(Locale.ROOT,"%02x",b&255));return text.toString();
++    }
++    private static void checkSource(File f,long size,long modified) throws Exception {
++        if (!f.isFile() || f.length()!=size || f.lastModified()!=modified) throw new IOException("Source changed. Refresh and try again.");
++    }
++    private JSONObject removePhoto(File f,long size,long modified) throws Exception {
++        String path=relative(f);
++        if(path.isEmpty() || !kind(f).equals("photo"))throw new IOException("Only selected photos can be deleted here");
++        checkSource(f,size,modified);
++        if(!f.delete())throw new IOException("Android could not delete this photo");
++        return new JSONObject().put("deleted",path);
++    }
++    private void read(File f,long offset,long size,long modified) throws Exception {
++        checkSource(f,size,modified);if (offset<0 || offset>size) throw new IOException("Invalid resume offset");
++        try (RandomAccessFile input=new RandomAccessFile(f,"r")) {
++            input.seek(offset);byte[] buffer=new byte[256*1024];long left=size-offset;
++            while (left>0) { int n=input.read(buffer,0,(int)Math.min(left,buffer.length));if(n<0)throw new EOFException();System.out.write(buffer,0,n);left-=n; }
++            System.out.flush();
++        }
++        checkSource(f,size,modified);
++    }
++    private File uploadFile(File parent,String token,String suffix) throws Exception {
++        if (!token.matches("[0-9a-f]{32}")) throw new IOException("Invalid transfer ID");
++        if (!parent.isDirectory()) throw new IOException("Destination folder is unavailable");
++        return file(relative(parent)+ (relative(parent).isEmpty()?"":"/") +".jhmirror-"+token+suffix);
++    }
++    private File lockFile(String token) throws Exception {
++        if (!token.matches("[0-9a-f]{32}")) throw new IOException("Invalid transfer ID");
++        File directory=new File("/data/local/tmp/jh-file-locks");
++        if(!directory.isDirectory()&&!directory.mkdir())throw new IOException("Transfer lock unavailable");
++        android.system.Os.chmod(directory.getPath(),0700);
++        return new File(directory,root.getName()+"-"+token);
++    }
++    private Properties metadata(File parent,String token) throws Exception {
++        Properties data=new Properties();try (InputStream in=new FileInputStream(uploadFile(parent,token,".json"))) { data.load(in); }return data;
++    }
++    private void saveMetadata(File parent,String token,Properties data) throws Exception {
++        File target=uploadFile(parent,token,".json"),temp=uploadFile(parent,token,".meta-tmp");
++        try (FileOutputStream out=new FileOutputStream(temp)) { data.store(out,"JH Mirror resumable transfer");out.getFD().sync(); }
++        if (!temp.renameTo(target)) throw new IOException("Could not save transfer state");
++    }
++    private JSONObject begin(File parent,String token,String rawName,long size,String sha) throws Exception {
++        String n=name(rawName);if(size<0 || !sha.matches("[0-9a-f]{64}"))throw new IOException("Invalid transfer metadata");
++        File meta=uploadFile(parent,token,".json"),part=uploadFile(parent,token,".partial");
++        Properties data;
++        if (meta.exists()) {
++            data=metadata(parent,token);
++            if (!n.equals(data.getProperty("name")) || !Long.toString(size).equals(data.getProperty("size")) || !sha.equals(data.getProperty("sha")))
++                throw new IOException("Source changed since transfer was paused");
++        } else {
++            if (part.exists()) throw new IOException("Unrecognized partial file");
++            data=new Properties();data.setProperty("name",n);data.setProperty("size",Long.toString(size));data.setProperty("sha",sha);saveMetadata(parent,token,data);
++        }
++        String target=data.getProperty("target");
++        if (target!=null && !part.exists()) {
++            File done=file(target);
++            if(done.isFile() && done.length()==size && hash(done).equals(sha))return new JSONObject().put("offset",size).put("completed",info(done));
++        }
++        if (!part.exists() && !part.createNewFile()) throw new IOException("Could not create partial file");
++        if (!part.isFile() || part.length()>size) throw new IOException("Invalid partial file");
++        // An interrupted old shell can still be draining buffered bytes. Wait for its writer before reporting the resume offset.
++        try(RandomAccessFile lock=new RandomAccessFile(lockFile(token),"rw");FileLock held=lock.getChannel().lock()) {
++            long remaining=size-part.length(),free=parent.getUsableSpace();
++            if(remaining>0 && (free<32L*1024*1024 || remaining>free-32L*1024*1024))throw new IOException("Not enough free space on phone. Free some space, then Resume.");
++            return new JSONObject().put("offset",part.length());
++        }
++    }
++    private JSONObject write(File parent,String token,long offset) throws Exception {
++        Properties data=metadata(parent,token);long size=Long.parseLong(data.getProperty("size"));File part=uploadFile(parent,token,".partial");
++        try(RandomAccessFile lock=new RandomAccessFile(lockFile(token),"rw");FileLock held=lock.getChannel().lock();RandomAccessFile out=new RandomAccessFile(part,"rw")) {
++            if (!part.isFile() || part.length()!=offset || offset<0 || offset>size) throw new IOException("Resume offset changed");
++            out.seek(offset);byte[] buffer=new byte[256*1024];long left=size-offset;
++            try { while(left>0) {
++                if(System.in.available()==0) {
++                    android.system.StructPollfd fd=new android.system.StructPollfd();fd.fd=FileDescriptor.in;fd.events=(short)android.system.OsConstants.POLLIN;
++                    if(android.system.Os.poll(new android.system.StructPollfd[]{fd},45000)==0)throw new IOException("Upload paused after no incoming data");
++                }
++                int n=System.in.read(buffer,0,(int)Math.min(left,buffer.length));if(n<0)throw new EOFException("Transfer interrupted");out.write(buffer,0,n);left-=n;
++            } }
++            finally { out.getFD().sync(); }
++        }
++        return new JSONObject().put("offset",part.length());
++    }
++    private JSONObject commit(File parent,String token) throws Exception {
++        Properties data=metadata(parent,token);File part=uploadFile(parent,token,".partial");long size=Long.parseLong(data.getProperty("size"));String sha=data.getProperty("sha");
++        String reserved=data.getProperty("target");
++        if (!part.exists() && reserved!=null) {
++            File done=file(reserved);if(done.isFile()&&done.length()==size&&hash(done).equals(sha)) return info(done);
++        }
++        if (!part.isFile() || part.length()!=size || !hash(part).equals(sha)) throw new IOException("File verification failed; source and partial copy were kept");
++        File target=null;
++        // FUSE shared storage does not support hard links. Reserve a fresh name atomically before replacing our own empty reservation.
++        if (reserved!=null) {
++            File candidate=file(reserved);
++            if(candidate.isFile()&&candidate.length()==0&&Long.toString(candidate.lastModified()).equals(data.getProperty("reservedAt")))target=candidate;
++        }
++        String original=data.getProperty("name");int dot=original.lastIndexOf('.');String stem=dot>0?original.substring(0,dot):original,ext=dot>0?original.substring(dot):"";
++        for (int n=1;target==null&&n<=10000;n++) {
++            File candidate=file(relative(parent)+(relative(parent).isEmpty()?"":"/")+(n==1?original:stem+" ("+n+")"+ext));
++            if(candidate.createNewFile())target=candidate;
++        }
++        if(target==null)throw new IOException("Could not choose a free destination name");
++        data.setProperty("target",relative(target));data.setProperty("reservedAt",Long.toString(target.lastModified()));saveMetadata(parent,token,data);
++        if(target.length()!=0||!Long.toString(target.lastModified()).equals(data.getProperty("reservedAt"))||!part.renameTo(target))throw new IOException("Destination changed; retry the transfer");
++        // MediaProvider/FUSE stores modification timestamps in seconds. Normalize before returning metadata.
++        target.setLastModified((System.currentTimeMillis()/1000L)*1000L);
++        return info(target);
++    }
++    private static boolean previewContextReady;
++    private static void preparePreviewContext() {
++        if(previewContextReady)return;
++        if(android.os.Looper.getMainLooper()==null)android.os.Looper.prepareMainLooper();
++        Workarounds.apply();previewContextReady=true;
++    }
++    private void verifyPreviewPeer(String identity) throws Exception {
++        String serial=(String)Class.forName("android.os.SystemProperties").getMethod("get",String.class).invoke(null,"ro.serialno");
++        if(identity.isEmpty() || !identity.equals(serial))throw new IOException("The connected phone changed");
++        Object manager=Class.forName("android.app.ActivityManager").getMethod("getService").invoke(null);
++        int current;
++        try { current=(Integer)manager.getClass().getMethod("getCurrentUserId").invoke(manager); }
++        catch(NoSuchMethodException old) { Object info=manager.getClass().getMethod("getCurrentUser").invoke(manager);current=info.getClass().getField("id").getInt(info); }
++        if(current!=user)throw new IOException("Phone user changed. Refresh the gallery");
++    }
++    private JSONObject preview(File f,long size,long modified,boolean indexed,String identity) throws Exception {
++        preparePreviewContext();
++        verifyPreviewPeer(identity);
++        if(!f.isFile() || f.length()!=size || (indexed?f.lastModified()/1000!=modified/1000:f.lastModified()!=modified))
++            throw new IOException("Photo changed. Refresh and try again");
++        long exact=f.lastModified();JSONObject metadata=info(f),result=render(f,1600,85);
++        checkSource(f,size,exact);
++        return result.put("file",metadata);
++    }
++    private void thumbnails(String identity,String requests) throws Exception {
++        JSONArray files=new JSONArray(requests);
++        if(files.length()<1||files.length()>6)throw new IOException("Invalid thumbnail batch");
++        preparePreviewContext();
++        for(int i=0;i<files.length();i++) {
++            JSONObject result=new JSONObject().put("index",i);
++            try {
++                verifyPreviewPeer(identity);
++                JSONObject entry=files.getJSONObject(i);File f=file(entry.getString("path"));
++                long size=entry.getLong("size"),modified=entry.getLong("modified");boolean indexed=entry.optBoolean("indexed",false);
++                if(!f.isFile()||f.length()!=size||(indexed?f.lastModified()/1000!=modified/1000:f.lastModified()!=modified))throw new IOException("Photo changed");
++                long exact=f.lastModified();result=render(f,256,70).put("index",i);checkSource(f,size,exact);
++            } catch(Exception unavailable) { result=new JSONObject().put("index",i).put("error","Thumbnail unavailable"); }
++            System.out.println(result.toString());System.out.flush();
++        }
++    }
++    private JSONObject render(File f,int edge,int quality) throws Exception {
++        preparePreviewContext();
++        Bitmap bitmap=null;
++        try {
++            if(kind(f).equals("photo")) {
++                BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;BitmapFactory.decodeFile(f.getPath(),bounds);
++                if(bounds.outWidth<1||bounds.outHeight<1)throw new IOException("No image preview");
++                BitmapFactory.Options options=new BitmapFactory.Options();int sample=1;
++                while(Math.max(bounds.outWidth,bounds.outHeight)/(sample*2)>=edge)sample*=2;
++                options.inSampleSize=sample;bitmap=BitmapFactory.decodeFile(f.getPath(),options);
++                if(bitmap!=null) {
++                    Matrix matrix=new Matrix();
++                    try {
++                        int orientation=new ExifInterface(f.getPath()).getAttributeInt(ExifInterface.TAG_ORIENTATION,1);
++                        switch(orientation) {
++                            case 2:matrix.setScale(-1,1);break;
++                            case 3:matrix.setRotate(180);break;
++                            case 4:matrix.setScale(1,-1);break;
++                            case 5:matrix.setRotate(90);matrix.postScale(-1,1);break;
++                            case 6:matrix.setRotate(90);break;
++                            case 7:matrix.setRotate(-90);matrix.postScale(-1,1);break;
++                            case 8:matrix.setRotate(270);break;
++                            default:break;
++                        }
++                    } catch(IOException unsupported) { /* Image can still be previewed without EXIF. */ }
++                    if(!matrix.isIdentity()) { Bitmap oriented=Bitmap.createBitmap(bitmap,0,0,bitmap.getWidth(),bitmap.getHeight(),matrix,true);if(oriented!=bitmap){bitmap.recycle();bitmap=oriented;} }
++                }
++            } else if(kind(f).equals("video")) {
++                MediaMetadataRetriever retriever=new MediaMetadataRetriever();try {
++                    retriever.setDataSource(f.getPath());
++                    bitmap=android.os.Build.VERSION.SDK_INT>=27 ? retriever.getScaledFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,edge,edge)
++                        : retriever.getFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
++                } finally { retriever.release(); }
++            }
++            if(bitmap==null)throw new IOException("No preview");
++            if(Math.max(bitmap.getWidth(),bitmap.getHeight())>edge) {
++                double scale=(double)edge/Math.max(bitmap.getWidth(),bitmap.getHeight());
++                Bitmap small=Bitmap.createScaledBitmap(bitmap,Math.max(1,(int)(bitmap.getWidth()*scale)),Math.max(1,(int)(bitmap.getHeight()*scale)),true);
++                if(small!=bitmap){bitmap.recycle();bitmap=small;}
++            }
++            ByteArrayOutputStream out=new ByteArrayOutputStream();bitmap.compress(bitmap.hasAlpha()?Bitmap.CompressFormat.PNG:Bitmap.CompressFormat.JPEG,quality,out);
++            int limit=edge<=384?256*1024:3*1024*1024;
++            while(out.size()>limit && Math.max(bitmap.getWidth(),bitmap.getHeight())>256) {
++                Bitmap small=Bitmap.createScaledBitmap(bitmap,Math.max(1,bitmap.getWidth()/2),Math.max(1,bitmap.getHeight()/2),true);bitmap.recycle();bitmap=small;
++                out.reset();bitmap.compress(bitmap.hasAlpha()?Bitmap.CompressFormat.PNG:Bitmap.CompressFormat.JPEG,quality,out);
++            }
++            if(out.size()>limit)throw new IOException("Preview too large");
++            return new JSONObject().put("image",Base64.encodeToString(out.toByteArray(),Base64.NO_WRAP));
++        } finally { if(bitmap!=null)bitmap.recycle(); }
++    }
++    public static void main(String[] args) {
++        try {
++            if(args.length<3)throw new IOException("Missing command");
++            JHFiles service=new JHFiles(Integer.parseInt(args[1]));String operation=args[0];File f=service.file(decode(args[2]));JSONObject result;
++            switch(operation) {
++                case "list":result=service.list(f);break;
++                case "info":result=service.info(f);break;
++                case "tree":result=service.tree(f,null);break;
++                case "photo":case "video":case "audio":result=f.equals(service.root)?service.media(operation):service.tree(f,operation);break;
++                case "photo-first":case "video-first":case "audio-first":result=service.media(operation.substring(0,operation.indexOf('-')),120,false);break;
++                case "thumb-batch":service.thumbnails(decode(args[3]),decode(args[4]));return;
++                case "hash":checkSource(f,Long.parseLong(args[3]),Long.parseLong(args[4]));result=new JSONObject().put("sha256",hash(f));break;
++                case "read":service.read(f,Long.parseLong(args[3]),Long.parseLong(args[4]),Long.parseLong(args[5]));return;
++                case "begin":result=service.begin(f,args[3],decode(args[4]),Long.parseLong(args[5]),args[6]);break;
++                case "write":result=service.write(f,args[3],Long.parseLong(args[4]));break;
++                case "commit":result=service.commit(f,args[3]);break;
++                case "finish":service.uploadFile(f,args[3],".json").delete();service.lockFile(args[3]).delete();result=new JSONObject().put("ok",true);break;
++                case "mkdir":if(!f.isDirectory()&&!f.mkdirs())throw new IOException("Could not create folder");result=service.info(f);break;
++                case "newdir":
++                    String n=name(decode(args[3]));File dir=null;
++                    for(int i=1;i<=10000;i++) { File candidate=service.file(service.relative(f)+(service.relative(f).isEmpty()?"":"/")+n+(i==1?"":" ("+i+")"));if(candidate.mkdir()){dir=candidate;break;} }
++                    if(dir==null)throw new IOException("Could not create folder");result=service.info(dir);break;
++                case "thumb":result=service.render(f,384,75);break;
++                case "preview":result=service.preview(f,Long.parseLong(args[3]),Long.parseLong(args[4]),args[5].equals("1"),decode(args[6]));break;
++                case "delete-photo":result=service.removePhoto(f,Long.parseLong(args[3]),Long.parseLong(args[4]));break;
++                default:throw new IOException("Unknown command");
++            }
++            System.out.println(result.toString());
++        } catch(Throwable error) {
++            try { System.err.println(new JSONObject().put("error",error.getMessage()==null?error.getClass().getSimpleName():error.getMessage())); } catch(Exception ignored) { }
++            System.exit(1);
++        }
++    }
++}
+--- /dev/null
++++ b/server/src/main/java/com/genymobile/scrcpy/JHMediaQuery.java
+@@ -0,0 +1,12 @@
++package com.genymobile.scrcpy;
++
++/** MediaStore columns vary by Android release; never force an old phone into a full-storage scan. */
++public final class JHMediaQuery {
++    private JHMediaQuery() { }
++    public static String selection(int sdk) {
++        String value = "media_type=?";
++        if (sdk >= 29) value += " AND is_pending=0";
++        if (sdk >= 30) value += " AND is_trashed=0";
++        return value;
++    }
++}

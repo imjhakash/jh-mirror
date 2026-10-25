@@ -417,6 +417,9 @@ execute_server(struct sc_server *server,
         // By default, power_on is true
         ADD_PARAM("power_on=false");
     }
+    if (params->persist_screen_off) {
+        ADD_PARAM("jh_persist_screen_off=true");
+    }
     if (params->new_display) {
         VALIDATE_STRING(params->new_display);
         ADD_PARAM("new_display=%s", params->new_display);

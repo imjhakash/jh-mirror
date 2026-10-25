@@ -4,6 +4,7 @@
 #endif
 
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 #include <SDL3/SDL.h>
 
@@ -809,9 +810,14 @@ sc_screen_show_initial_window(struct sc_screen *screen) {
     }
 
     screen->window_shown = true;
-    sc_sdl_show_window(screen->window);
 #ifdef __APPLE__
+    // JH Mirror can start the session for the menu-bar preview without showing the window.
+    if (!getenv("AW_START_HIDDEN")) {
+        sc_sdl_show_window(screen->window);
+    }
     sc_macos_window_ready(screen->window);
+#else
+    sc_sdl_show_window(screen->window);
 #endif
     sc_screen_update_content_rect(screen);
 }

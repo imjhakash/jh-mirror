@@ -22,12 +22,12 @@ private final class FileHTTPResult {
 
 final class FileTransferClient {
     static let receivedFolder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Android Wireless", isDirectory: true)
+        .appendingPathComponent("JH Mirror", isDirectory: true)
     var onStatus: ((String) -> Void)?
     var onReceived: ((URL) -> Void)?
     /// Called on the main queue after a clipboard item is saved and verified.
     var onClipboard: ((URL) -> Void)?
-    private let queue = DispatchQueue(label: "local.androidwireless.files", qos: .utility)
+    private let queue = DispatchQueue(label: "com.johirulhoqakash.jhmirror.files", qos: .utility)
     private let lock = NSLock()
     private var connection: FileConnection?
     private var busy = false
@@ -63,7 +63,7 @@ final class FileTransferClient {
                 let manifest = try JSONDecoder().decode(FileManifest.self, from: data)
                 guard manifest.files.count <= 100 else { throw self.error("Too many files in queue.") }
                 if manifest.files.isEmpty {
-                    if !self.hasReceived { self.status("Ready · Phone: Share → Android Wireless") }
+                    if !self.hasReceived { self.status("Ready · Phone: Share → JH Mirror") }
                     return
                 }
                 try self.prepareFolder()
@@ -85,7 +85,7 @@ final class FileTransferClient {
         session.invalidateAndCancel()
     }
     private func error(_ message: String) -> NSError {
-        NSError(domain: "AndroidWirelessFiles", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        NSError(domain: "JHMirrorFiles", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
     private func request(_ path: String, method: String = "GET", limit: Int) throws -> Data {
         lock.lock(); let current = connection; let isStopped = stopped; lock.unlock()
@@ -191,7 +191,7 @@ final class FileTransferClient {
         }
         guard let saved else { throw error("Could not choose a unique file name.") }
         // Mark downloads so Finder treats incoming executables as received files.
-        let quarantine = "0083;" + String(Int(Date().timeIntervalSince1970), radix: 16) + ";Android Wireless;"
+        let quarantine = "0083;" + String(Int(Date().timeIntervalSince1970), radix: 16) + ";JH Mirror;"
         quarantine.withCString { value in
             saved.path.withCString { path in _ = setxattr(path, "com.apple.quarantine", value, strlen(value), 0, 0) }
         }

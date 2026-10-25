@@ -202,6 +202,8 @@ sc_control_msg_serialize(const struct sc_control_msg *msg, uint8_t *buf) {
         case SC_CONTROL_MSG_TYPE_RESET_VIDEO:
         case SC_CONTROL_MSG_TYPE_CAMERA_ZOOM_IN:
         case SC_CONTROL_MSG_TYPE_CAMERA_ZOOM_OUT:
+        case SC_CONTROL_MSG_TYPE_JH_KEEP_ACTIVE:
+        case SC_CONTROL_MSG_TYPE_JH_RELEASE_DISPLAY:
             // no additional data
             return 1;
         default:
@@ -335,6 +337,12 @@ sc_control_msg_log(const struct sc_control_msg *msg) {
             break;
         case SC_CONTROL_MSG_TYPE_RESET_VIDEO:
             LOG_CMSG("reset video");
+            break;
+        case SC_CONTROL_MSG_TYPE_JH_KEEP_ACTIVE:
+            LOG_CMSG("mirror activity pulse");
+            break;
+        case SC_CONTROL_MSG_TYPE_JH_RELEASE_DISPLAY:
+            LOG_CMSG("phone display intent released");
             break;
         case SC_CONTROL_MSG_TYPE_CAMERA_SET_TORCH:
             LOG_CMSG("camera set torch %s",

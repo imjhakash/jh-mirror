@@ -35,7 +35,7 @@ if not key.exists():
         '-alias', 'androidwireless', '-keyalg', 'RSA', '-keysize', '3072', '-validity', '10000',
         '-dname', 'CN=Android Wireless Personal Build', '-noprompt')
     key.chmod(0o600)
-apk = ROOT / 'Android Wireless Companion.apk'
+apk = ROOT / 'JH Mirror Companion.apk'
 run(TOOLS / 'apksigner', 'sign', '--ks', key, '--ks-key-alias', 'androidwireless', '--ks-pass', 'pass:android',
     '--key-pass', 'pass:android', '--out', apk, BUILD / 'aligned.apk')
 run(TOOLS / 'apksigner', 'verify', apk)

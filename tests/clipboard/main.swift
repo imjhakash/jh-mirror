@@ -24,6 +24,15 @@ for (name, type) in [("photo.jpg", NSBitmapImageRep.FileType.jpeg), ("screenshot
     assert(URL(string: pasteboard.string(forType: .fileURL) ?? "")?.lastPathComponent == name)
 }
 let text = folder.appendingPathComponent("Phone clipboard.txt")
+let images = [folder.appendingPathComponent("photo.jpg"), folder.appendingPathComponent("screenshot.png")]
+assert(placeImagesOnPasteboard(images,pasteboard:pasteboard,providers:&providers))
+assert(pasteboard.pasteboardItems?.count == 2 && providers.count == 2, "bulk selection supplies one item per photo")
+for item in pasteboard.pasteboardItems! {
+    assert(item.data(forType:.png) != nil && item.data(forType:.tiff) != nil, "each selected image has lazy image data")
+    assert(item.string(forType:.fileURL) != nil, "each photo can paste into Finder")
+}
+let count = pasteboard.changeCount
+assert(!placeImagesOnPasteboard([],pasteboard:pasteboard,providers:&providers) && pasteboard.changeCount == count, "empty selection preserves clipboard")
 try! "Hello from the phone · नमस्ते".write(to: text, atomically: true, encoding: .utf8)
 assert(placeOnPasteboard(text, pasteboard: pasteboard, providers: &providers))
 assert(pasteboard.string(forType: .string) == "Hello from the phone · नमस्ते", "copied text pastes as text")

@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.johirulhoqakash.jhmirror.uicheck">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <instrumentation android:name="com.johirulhoqakash.jhmirror.uicheck.PhoneUiCheck" android:targetPackage="com.johirulhoqakash.jhmirror" />
+    <application android:label="JH Mirror generated UI checks" android:allowBackup="false">
+        <!-- Temporary test APK only: this provider serves one constant generated PNG, never user data. -->
+        <provider android:name=".FixtureProvider" android:authorities="com.johirulhoqakash.jhmirror.uicheck.fixture" android:exported="true" />
+    </application>
+</manifest>

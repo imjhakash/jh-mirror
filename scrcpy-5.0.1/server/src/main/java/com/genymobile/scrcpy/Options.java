@@ -51,6 +51,7 @@ public class Options {
     private boolean cameraTorch;
     private boolean showTouches;
     private boolean stayAwake;
+    private boolean persistScreenOff;
     private int screenOffTimeout = -1;
     private int displayImePolicy = -1;
     private List<CodecOption> videoCodecOptions;
@@ -202,6 +203,7 @@ public class Options {
     public boolean getStayAwake() {
         return stayAwake;
     }
+    public boolean getPersistScreenOff() { return persistScreenOff; }
 
     public int getScreenOffTimeout() {
         return screenOffTimeout;
@@ -430,6 +432,9 @@ public class Options {
                     break;
                 case "stay_awake":
                     options.stayAwake = Boolean.parseBoolean(value);
+                    break;
+                case "jh_persist_screen_off":
+                    options.persistScreenOff = Boolean.parseBoolean(value);
                     break;
                 case "screen_off_timeout":
                     options.screenOffTimeout = Integer.parseInt(value);

@@ -48,6 +48,10 @@
 # include "v4l2_sink.h"
 #endif
 #include "video_regulator.h"
+#ifdef __APPLE__
+# include "aw_preview.h"
+# include "aw_camera_sink.h"
+#endif
 
 #define SC_BACKPRESSURE_THRESHOLD 8 // in-flight frames in video regulator
 
@@ -62,6 +66,10 @@ struct scrcpy {
     struct sc_hwdec hwdec;
     struct sc_recorder recorder;
     struct sc_video_regulator video_regulator;
+#ifdef __APPLE__
+    struct sc_aw_preview aw_preview;
+    struct sc_aw_camera_sink camera_sink;
+#endif
 #ifdef HAVE_V4L2
     struct sc_v4l2_sink v4l2_sink;
     struct sc_video_regulator v4l2_regulator;
@@ -401,6 +409,12 @@ scrcpy(struct scrcpy_options *options) {
     bool v4l2_regulator_initialized = false;
 #endif
     bool video_regulator_initialized = false;
+#ifdef __APPLE__
+    bool aw_preview_initialized = false;
+    bool camera_sink_initialized = false;
+    bool camera_sink_requested = getenv("JH_CAMERA_DEVICE_UID") && options->video
+        && options->video_source == SC_VIDEO_SOURCE_CAMERA;
+#endif
     bool video_demuxer_started = false;
     bool audio_demuxer_started = false;
     bool hwdec_initialized = false;
@@ -474,6 +488,7 @@ scrcpy(struct scrcpy_options *options) {
         .tcpip_dst = options->tcpip_dst,
         .cleanup = options->cleanup,
         .power_on = options->power_on,
+        .persist_screen_off = getenv("AW_PERSIST_SCREEN_OFF") != NULL,
         .kill_adb_on_close = options->kill_adb_on_close,
         .camera_high_speed = options->camera_high_speed,
         .camera_torch = options->camera_torch,
@@ -850,6 +865,9 @@ aoa_complete:
     }
 
     bool needs_video_decoder = options->video_playback;
+#ifdef __APPLE__
+    needs_video_decoder |= camera_sink_requested;
+#endif
     bool needs_audio_decoder = options->audio_playback;
 #ifdef HAVE_V4L2
     needs_video_decoder |= !!options->v4l2_device;
@@ -897,10 +915,24 @@ aoa_complete:
         audio_decoder_started = true;
     }
 
+#ifdef __APPLE__
+    if (camera_sink_requested) {
+        sc_aw_camera_sink_init(&s->camera_sink);
+        camera_sink_initialized = true;
+        sc_frame_source_add_sink(&s->video_decoder.frame_source, &s->camera_sink.frame_sink);
+    }
+#endif
+
     if (options->video_playback) {
         assert(options->window);
         assert(screen_initialized);
         struct sc_frame_source *src = &s->video_decoder.frame_source;
+#ifdef __APPLE__
+        if (sc_aw_preview_init(&s->aw_preview)) {
+            aw_preview_initialized = true;
+            sc_frame_source_add_sink(src, &s->aw_preview.frame_sink);
+        }
+#endif
         if (options->video_buffer) {
             uint32_t backpressure_threshold = SC_BACKPRESSURE_THRESHOLD;
 #ifdef HAVE_V4L2
@@ -1128,6 +1160,12 @@ end:
     if (video_regulator_initialized) {
         sc_video_regulator_destroy(&s->video_regulator);
     }
+#ifdef __APPLE__
+    if (aw_preview_initialized) {
+        sc_aw_preview_destroy(&s->aw_preview);
+    }
+    if (camera_sink_initialized) { sc_aw_camera_sink_destroy(&s->camera_sink); }
+#endif
 
 #ifdef HAVE_V4L2
     if (v4l2_regulator_initialized) {
