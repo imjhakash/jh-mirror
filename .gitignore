@@ -26,3 +26,6 @@ __pycache__/
 # Packed copy of website/ and local editor launch config
 /jh-mirror-website.zip
 /.claude/
+
+# Higher-resolution copy of the promo already stored in website/assets/video
+/GYf3dxb5gtWKeWcR97-RxA.mp4
